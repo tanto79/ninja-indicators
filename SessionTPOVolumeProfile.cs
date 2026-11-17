@@ -5523,10 +5523,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (session.HighLevel > 0)
                     RenderExtensionLine(chartScale, endX, session.SessionHigh,
-                        session.HighBreakTime, priorHighLowBrush, pfx + "HI " + session.SessionHigh.ToString("F2"));
+                        session.HighBreakTime, priorHighLowBrush, pfx + "HI " + session.SessionHigh.ToString("F2"), ShowLevelZones);
                 if (session.LowLevel > 0)
                     RenderExtensionLine(chartScale, endX, session.SessionLow,
-                        session.LowBreakTime, priorHighLowBrush, pfx + "LO " + session.SessionLow.ToString("F2"));
+                        session.LowBreakTime, priorHighLowBrush, pfx + "LO " + session.SessionLow.ToString("F2"), ShowLevelZones);
             }
 
             // === TPO naked extensions ===
