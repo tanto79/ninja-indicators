@@ -753,7 +753,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "Show Level Roles",
-                 Description = "Live support/resistance classification beside each prior-session and naked High/Low/VPOC/VVAH/VVAL: untested, testing, held, breaking (acceptance timer) or flipped. Price side gives the role; tick interactions confirm it. Tick-driven and identical on any chart bar size.",
+                 Description = "Live support/resistance classification beside each prior-session and naked High/Low/VPOC/VVAH/VVAL: untested, testing, held, breaking (acceptance timer) or flipped. Price side gives the role; role reversals require traded-time acceptance, not a single decisive tick. Tick-driven and identical on any chart bar size.",
                  Order = 1, GroupName = "3B. Level Roles")]
         public bool ShowLevelRoles { get; set; }
 
@@ -2567,7 +2567,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             Untested,   // no tick has reached the touch-tolerance band this session
             Testing,    // price is inside the touch-tolerance band
             Held,       // a test was completed and the level rejected it (held)
-            Breaking,   // price is beyond the level and the acceptance timer is running
+            Breaking,   // an acceptance run is active; brief pokes back to the role side pause it, not fail it
             Flipped     // break accepted — the level now acts in the opposite role
         }
 
@@ -2586,6 +2586,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             public long     BreakSell;     // aggressor sell volume of the current break run
             public int      BreakDir;     // direction of the running break attempt: +1 up, -1 down, 0 = none
             public double   BreakElapsed; // traded seconds in the current break run (template-session gaps excluded)
+            public bool     RunPaused;    // acceptance run paused: price re-crossed to the role side without yet failing the run
+            public bool     ReclaimRun;   // the current run is failing a flip: at acceptance the original role re-asserts
+            public double   RoleElapsed;  // traded seconds the role side has re-asserted during the current paused run
         }
 
         private class RoleTracker
@@ -2778,13 +2781,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (st.BreakDir != 0)
                 {
-                    st.InBand    = true;
-                    st.BandBuy  += upVol;
-                    st.BandSell += downVol;
+                    st.InBand      = true;
+                    st.RunPaused   = false;
+                    st.RoleElapsed = 0;
+                    st.BandBuy    += upVol;
+                    st.BandSell   += downVol;
                     return;
                 }
 
                 st.BreakElapsed = 0;
+                st.RunPaused    = false;
+                st.RoleElapsed  = 0;
                 if (st.State == LRState.Breaking)
                     st.State = LRState.Testing;
                 if (!st.InBand)
@@ -2805,29 +2812,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             st.InBand = false;
             int side = d > 0 ? 1 : -1;
 
-            if (st.State == LRState.Flipped)
-            {
-                if (side != st.Role)
-                {
-                    // reclaim: the flip failed, the level is back in its original role;
-                    // a decisive reclaim without a fresh touch registers no quality
-                    st.Quality       = LRQuality.None;
-                    st.State         = LRState.Held;
-                    st.Helds++;
-                    st.Role          = side;
-                    st.BreakDir      = 0;
-                    st.BreakElapsed  = 0;
-                    st.PendingReject = false;
-                }
-                else if (st.PendingReject)
-                {
-                    // the retest of the flipped level was rejected
-                    st.State         = LRState.Held;
-                    st.Helds++;
-                    st.PendingReject = false;
-                }
-            }
-            else if (st.Role == 0)
+            if (st.Role == 0)
             {
                 // first decisive print of the session: seeds the role by position,
                 // no hold or flip event to credit yet
@@ -2839,44 +2824,86 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (st.State == LRState.Breaking)
                 {
-                    // decisive return to the role side before acceptance = failed break
-                    st.Helds++;
-                    st.Quality       = ClassifyTest(st, st.Role);
-                    st.BreakDir      = 0;
-                    st.BreakElapsed  = 0;
-                    st.PendingReject = false;
+                    // price re-crossed to the role side during an acceptance run:
+                    // brief pokes do not fail the run (chop across the line must
+                    // not veto an acceptance still building); the run fails only
+                    // when the role side re-asserts for LevelRoleAcceptSeconds
+                    st.RunPaused    = true;
+                    st.RoleElapsed += tradedDelta;
+                    if (st.RoleElapsed >= LevelRoleAcceptSeconds)
+                    {
+                        st.Helds++;
+                        st.Quality       = ClassifyTest(st, st.Role);
+                        st.BreakDir      = 0;
+                        st.BreakElapsed  = 0;
+                        st.RoleElapsed   = 0;
+                        st.RunPaused     = false;
+                        st.ReclaimRun    = false;
+                        st.PendingReject = false;
+                        st.State         = LRState.Held;
+                    }
                 }
-                else if (st.PendingReject)
+                else
                 {
-                    // the band entry just left behind matured into a completed rejection
-                    st.Helds++;
-                    st.Quality       = ClassifyTest(st, st.Role);
-                    st.PendingReject = false;
+                    st.RoleElapsed = 0;
+                    if (st.State == LRState.Flipped)
+                    {
+                        if (st.PendingReject)
+                        {
+                            // the retest of the flipped level was rejected
+                            st.State         = LRState.Held;
+                            st.Helds++;
+                            st.PendingReject = false;
+                        }
+                    }
+                    else if (st.PendingReject)
+                    {
+                        // the band entry just left behind matured into a completed rejection
+                        st.Helds++;
+                        st.Quality       = ClassifyTest(st, st.Role);
+                        st.PendingReject = false;
+                        st.State         = LRState.Held;
+                    }
+                    else
+                        st.State = LRState.Held;
                 }
-                st.State = LRState.Held;
             }
             else
             {
-                // beyond the level on the opposite side of the confirmed role:
-                // (re)start the acceptance clock when the run changes
+                // beyond the level, opposite the current role: (re)start the
+                // acceptance clock when the run changes. This also covers reclaim
+                // of a flipped role — a flip must now be positively failed the
+                // same way it was accepted, instead of reverting on one poke
                 if (st.BreakDir != side)
                 {
                     st.BreakDir     = side;
                     st.BreakElapsed = 0;
                     st.BreakBuy     = 0;
                     st.BreakSell    = 0;
+                    st.ReclaimRun   = st.State == LRState.Flipped;
                 }
                 else
                     st.BreakElapsed += tradedDelta;
+                st.RunPaused   = false;
+                st.RoleElapsed = 0;
                 st.BreakBuy  += upVol;
                 st.BreakSell += downVol;
                 if (st.BreakElapsed >= LevelRoleAcceptSeconds)
                 {
                     st.Quality       = ClassifyBreak(st);
-                    st.State         = LRState.Flipped;
+                    if (st.ReclaimRun)
+                    {
+                        // flips fail like they form: the original role re-asserts
+                        st.State  = LRState.Held;
+                        st.Helds++;
+                        st.ReclaimRun = false;
+                    }
+                    else
+                        st.State = LRState.Flipped;
                     st.Role          = side;
                     st.BreakDir      = 0;
                     st.BreakElapsed  = 0;
+                    st.RoleElapsed   = 0;
                     st.PendingReject = false;
                 }
                 else
@@ -2982,7 +3009,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 default: // Breaking
                     int elapsed = (int)st.BreakElapsed;
                     brush = roleBreakingBrush;
-                    tag   = roleWord + " · BREAKING " + elapsed.ToString() + "s";
+                    tag   = roleWord + " · BREAKING " + elapsed.ToString() + "s"
+                          + (st.RunPaused ? " (paused)" : "");
                     break;
             }
 
