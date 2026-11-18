@@ -2767,11 +2767,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             double d  = tickPrice - level;
             double ad = Math.Abs(d);
 
-            // Inside the touch-tolerance band: disarms the acceptance clock (a break
-            // must be continuous) and registers the approach of a new test.
+            // Inside the touch-tolerance band. With no acceptance run active this
+            // is the approach of a new test: register it and arm the pending
+            // rejection. During an ACTIVE acceptance run a retest that touches the
+            // band must not erase the clock — banking the traded time beyond the
+            // level and resuming once price is back beyond it lets a level that is
+            // repeatedly retested from beyond flip roles correctly; only a decisive
+            // return to the role side (the failed-break branch below) kills the run.
             if (ad <= tol)
             {
-                st.BreakDir = 0;
+                if (st.BreakDir != 0)
+                {
+                    st.InBand    = true;
+                    st.BandBuy  += upVol;
+                    st.BandSell += downVol;
+                    return;
+                }
+
                 st.BreakElapsed = 0;
                 if (st.State == LRState.Breaking)
                     st.State = LRState.Testing;
