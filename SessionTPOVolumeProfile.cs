@@ -382,8 +382,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ================================================================
         // Delta tracking fields
         // ================================================================
-        // By-reference OrderFlow+ cumulative delta — BidAsk, Session period
-        private OrderFlowCumulativeDelta cumulativeDeltaIndicator;
         private int                      lastTickDirectionSign    = 0;  // 1 = uptick, -1 = downtick; carry-forward for equal-price ticks
 
         // Per primary-bar bid/ask totals (reset each new primary bar)
@@ -1470,11 +1468,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 tradingDayFirstBegin.Clear();
                 templateDayBegin = templateDayEnd = lastKeyBegin = lastKeyEnd = DateTime.MinValue;
 
-                // Instantiate cumulative delta — must be by-reference so the .Update()
-                // call in the tick handler keeps it in sync with the primary bars.
-                cumulativeDeltaIndicator = OrderFlowCumulativeDelta(
-                    CumulativeDeltaType.BidAsk, CumulativeDeltaPeriod.Session, 0);
-
                 Print("SessionTPOVolumeProfile loaded — period: " + ProfilePeriod + "  row size: " + rowSize.ToString("F4")
                     + "  (RTH " + RTHStartTime.ToString(@"hh\:mm")
                     + "–" + RTHEndTime.ToString(@"hh\:mm") + ")"
@@ -1687,10 +1680,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (tickPrice < currentSession.RTHLow || currentSession.RTHLow == double.MaxValue)
                     currentSession.RTHLow = tickPrice;
             }
-
-            // --- Sync cumulative delta indicator with this tick so primary-bar reads are current ---
-            if (cumulativeDeltaIndicator != null)
-                cumulativeDeltaIndicator.Update(cumulativeDeltaIndicator.BarsArray[1].Count - 1, 1);
 
             // --- Naked level testing against prior sessions ---
             if (ShowNakedVPOC || ShowPriorSessionVPOC || ShowNakedVAHVAL || ShowPriorSessionLevels
