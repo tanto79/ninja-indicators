@@ -68,8 +68,6 @@ using SharpDX.DirectWrite;
         Horizontal
     }
 
-    /// <summary>Anchor corner for the analytics panel overlay.</summary>
-    public enum STVPPanelPosition { TopLeft, TopRight }
     public enum STVPTakeProfitMode { AtrMultiple, StructureLevels, Ticks } // legacy enum kept for compile; only Ticks used
     public enum STVPStopMode { AtrMultiple, Structure, Ticks } // legacy enum kept for compile; only Ticks used
 
@@ -555,23 +553,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         private double          dominance        = 0.0;   // −1 (Sellers) … +1 (Buyers)
         private STVPRegimeState regimeState      = STVPRegimeState.Transition;
         private int             lastRegimeBar    = -1;
-        private bool            regimeHistoryRebuilt = false;
         // In-charge Clear/Strong transition tracking (panel: clear >= 0.25, strong >= 0.50)
         // Forming primary-bar OHLC built from ticks (live Control price direction needs the
         // primary bar's range; Open[0]/High[0]/Low[0]/Close[0] on the 1-tick series are one price).
         private int             fbBar = -1;
         private double          fbOpen, fbHigh, fbLow, fbLast;
-        private int             ctrlLogBar = -1;      // Control log: bar being logged
-        private long            ctrlLogVol = -1;      // Control log: last bar volume printed
-        // Control log per-bar stats (for the BAR SUMMARY line)
-        private DateTime        ctrlStatStart;
-        private long            ctrlStatLastVol = -1, ctrlStatMaxVol, ctrlStatMinVol, ctrlStatLastFlipVol, ctrlStatFirstArmVol, ctrlLogNextStep;
-        private double          ctrlStatLast, ctrlStatMax, ctrlStatMin;
-        private int             ctrlStatFlips, ctrlStatFirstArmSide, ctrlStatZone;
-        private int             ctrlLogFiredBar = -1;  // Control log: bar on which IC fired
-        private bool            ctrlLogReached = false; // Control log: contract count reached on this bar
-        private int             ctrlLogZone = 99;       // Control log: last arm zone printed after the count was reached
-        private bool            ctrlLogDone = false;  // Control log: bar already reached the contract count
         private int             lastClearStrongSide = 0;  // 0 = not CS, +1 = buyers CS, -1 = sellers CS
         private DateTime        lastTickTimeSeen = DateTime.MinValue;  // chart-time of the latest tick (for RTH-open blackout)
 
@@ -642,11 +628,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private int               eightySide    = 0;
         private DateTime          eightyInsideSince = DateTime.MinValue;
 
-        // Historical storage — one entry per primary bar index so past sessions
-        // can be scrubbed and the Discovery / Auction timeline is visible.
-        private Dictionary<int, double>          regimeScoreAtBar  = new Dictionary<int, double>();
-        private Dictionary<int, double>          dominanceAtBar    = new Dictionary<int, double>();
-        private Dictionary<int, STVPRegimeState> regimeStateAtBar  = new Dictionary<int, STVPRegimeState>();
+        // Historical storage — one entry per primary bar index.
         // Depth contribution stored per bar so historical plots include it.
         // Live L2 values are stored when available; otherwise a tick-derived
         // depth proxy is stored so every bar still has a depth signal.
@@ -755,16 +737,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush tradeMonExitBrush;
         private SharpDX.DirectWrite.TextFormat wallLabelFormat;
         private SharpDX.DirectWrite.TextFormat tradeMonFormat;
-
-        // Regime rendering brushes
-        private SharpDX.Direct2D1.Brush regimeDiscoveryBgBrush;
-        private SharpDX.Direct2D1.Brush regimeAuctionBgBrush;
-        private SharpDX.Direct2D1.Brush regimeTransitionBgBrush;
-        private SharpDX.Direct2D1.Brush regimeBuyerBrush;
-        private SharpDX.Direct2D1.Brush regimeSellerBrush;
-        private SharpDX.Direct2D1.Brush regimePanelBgBrush;
-        private SharpDX.Direct2D1.Brush regimePanelTextBrush;
-        private SharpDX.DirectWrite.TextFormat regimePanelFormat;
 
         #endregion
 
@@ -1679,208 +1651,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
 
 
-        #region Properties — Level Export
-
-        [NinjaScriptProperty]
-        [Display(Name        = "Print Levels At Session Start",
-                 Description = "Prints prior session levels to the Output window automatically when a new session begins.",
-                 Order = 1, GroupName = "11. Level Export")]
-        public bool PrintLevelsAtSessionStart { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name        = "Print Levels On Demand (Ctrl+P)",
-                 Description = "Press Ctrl+P while chart has focus to print prior session levels and all active naked levels on demand.",
-                 Order = 2, GroupName = "11. Level Export")]
-        public bool PrintLevelsOnDemand { get; set; }
-
-        #endregion
-
-        #region Properties — Regime & Dominance
-
-        [NinjaScriptProperty]
-        [Display(Name = "Enable Regime Detection",
-                 Description = "Master switch for the non-lagging Discovery / Auction regime + dominance engine.",
-                 Order = 1, GroupName = "12. Regime & Dominance")]
-        public bool EnableRegimeDetection { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(3, 30)]
-        [Display(Name = "Dominance Window (Bars)",
-                 Description = "Number of recent primary bars used to measure aggressive bid/ask dominance. Pure order-flow window — no moving averages.",
-                 Order = 2, GroupName = "12. Regime & Dominance")]
-        public int DominanceWindowBars { get; set; }
-
-        [Range(-1, 30)]
-        [Display(Name = "Control Window (Bars, 0 = off, -1 = same as Dominance Window)",
-                 Description = "Bars of aggressor flow used for the persistence part of the Control score (30% weight). 0 = drop persistence entirely: Control becomes 0.57 x bar delta + 0.43 x price direction (still spans -1..+1). -1 = use the Dominance Window (original behaviour). Affects Control only; the Discovery/Auction regime keeps using the Dominance Window.",
-                 Order = 21, GroupName = "12. Regime & Dominance")]
-        public int ControlWindowBars { get; set; }
-
-        [Display(Name = "Log Control To Output (new bars)",
-                 Description = "Realtime only. From the start of each new primary bar, prints a line to the NinjaScript Output window on every tick: time, price, bar contracts, Control, and its parts (bar delta, price direction, persistence), until the bar reaches the contract count below. Tags Clear BUY / Clear SELL when |Control| >= the Clear/Strong Gate.",
-                 Order = 22, GroupName = "12. Regime & Dominance")]
-        public bool LogControlOnNewBar { get; set; }
-
-        [Display(Name = "Log Volumetric Bar To Control",
-                 Description = "When the primary chart series is NT8 Volumetric bars, print each bar's footprint-style bid/ask, delta, POC-in-bar, and strongest diagonal imbalance rows into the Control log. No effect on time/tick/range bars that are not Volumetric. Safe to leave ON.",
-                 Order = 25, GroupName = "12. Regime & Dominance")]
-        public bool LogVolumetricToControl { get; set; }
-
-        [Range(1, 1000000)]
-        [Display(Name = "Control Log: Stop At Bar Contracts",
-                 Description = "The Control log for a bar stops once the forming bar has traded this many contracts (the line that crosses it is printed and marked).",
-                 Order = 23, GroupName = "12. Regime & Dominance")]
-        public int ControlLogContracts { get; set; }
-
-        [Display(Name = "Control Log: Continue Until IC Fires",
-                 Description = "After the bar reaches the contract count, keep logging (only when Control changes arm zone: IC-arm BUY / SELL / neutral) until IN CHARGE actually fires on that bar or the bar ends. An IC FIRE line (time, price, contracts, Control) is printed when it fires.",
-                 Order = 24, GroupName = "12. Regime & Dominance")]
-        public bool ControlLogUntilFire { get; set; }
-
-        [Range(0, 100000)]
-        [Display(Name = "Control Log: Print Every N Contracts (0 = every tick)",
-                 Description = "Sampling for the Control log. A line prints each time the bar passes another multiple of this many contracts, and ALWAYS prints when Control changes arm zone (IC-arm BUY / SELL / neutral). Default 0 prints a line on every volume change (full detail, a lot of lines at 10,000 contracts).",
-                 Order = 25, GroupName = "12. Regime & Dominance")]
-        public int ControlLogStepContracts { get; set; }
-
-        [Display(Name = "Control Log: Bar Summary Line",
-                 Description = "Off by default. When on, one BAR SUMMARY line prints as each bar ends (final Control, peak/trough with contract counts, first arm, zone changes).",
-                 Order = 26, GroupName = "12. Regime & Dominance")]
-        public bool ControlLogBarSummary { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.15, 0.90)]
-        [Display(Name = "Discovery Threshold",
-                 Description = "RegimeScore above this value is classified as Discovery (one-sided).",
-                 Order = 3, GroupName = "12. Regime & Dominance")]
-        public double DiscoveryThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(-0.90, -0.15)]
-        [Display(Name = "Auction Threshold",
-                 Description = "RegimeScore below this value is classified as Auction (two-sided).",
-                 Order = 4, GroupName = "12. Regime & Dominance")]
-        public double AuctionThreshold { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.30, 0.95)]
-        [Display(Name = "Imbalance Intensity Floor",
-                 Description = "Minimum abs(delta)/volume over the dominance window required to contribute to one-sidedness. Lower = more sensitive.",
-                 Order = 5, GroupName = "12. Regime & Dominance")]
-        public double ImbalanceIntensityFloor { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Use Level-2 Book",
-                 Description = "Include market-depth contribution in regime/dominance for ALL bars. Live: real Level-2 book + absorption. Historical (or when L2 not flowing): tick-derived depth proxy so historical bands always include a depth signal.",
-                 Order = 6, GroupName = "12. Regime & Dominance")]
-        public bool UseLevel2Book { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 20)]
-        [Display(Name = "L2 Depth Levels",
-                 Description = "How many book levels (from the touch) to include when computing book imbalance. 1 = best bid/ask only.",
-                 Order = 7, GroupName = "12. Regime & Dominance")]
-        public int L2DepthLevels { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "L2 Weight on Dominance",
-                 Description = "How strongly Level-2 book imbalance modulates the dominance reading (0 = ignore L2, 1 = full weight).",
-                 Order = 8, GroupName = "12. Regime & Dominance")]
-        public double L2DominanceWeight { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0.0, 1.0)]
-        [Display(Name = "L2 Absorption Weight",
-                 Description = "How strongly detected absorption (aggressive volume failing against resting size) pulls RegimeScore toward Auction.",
-                 Order = 9, GroupName = "12. Regime & Dominance")]
-        public double L2AbsorptionWeight { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show Regime Background",
-                 Description = "Tint the price-panel background according to the current regime (Discovery / Auction / Transition).",
-                 Order = 10, GroupName = "12. Regime & Dominance")]
-        public bool ShowRegimeBackground { get; set; }
-
-        [Display(Name = "Show Detail Line (score / control numbers)",
-                 Description = "Adds one small line with the raw numbers behind the plain-English panel. Off by default.",
-                 Order = 19, GroupName = "12. Regime & Dominance")]
-        public bool ShowRegimeDetailLine { get; set; }
-
-        [Display(Name = "Show Depth History Strip (advanced)",
-                 Description = "Optional third strip showing book/depth imbalance per bar. Historical bars use a tick-derived proxy; real Level 2 is only available live. Off by default.",
-                 Order = 20, GroupName = "12. Regime & Dominance")]
-        public bool ShowDepthHistoryStrip { get; set; }
-
-        [Display(Name = "Show Market + Who's-In-Charge History Strips",
-                 Description = "Draw per-bar strips across the chart: top strip = who is in charge (buyers/sellers), second strip = book/depth imbalance. Bright = real Level-2, dim = tick-derived proxy (historical).",
-                 Order = 18, GroupName = "12. Regime & Dominance")]
-        public bool ShowRegimeHistoryStrips { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show Regime Panel",
-                 Description = "Display a compact status panel showing RegimeState, RegimeScore and Dominance.",
-                 Order = 11, GroupName = "12. Regime & Dominance")]
-        public bool ShowRegimePanel { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Regime Panel Position",
-                 Description = "Where to place the regime status panel.",
-                 Order = 12, GroupName = "12. Regime & Dominance")]
-        public STVPPanelPosition RegimePanelPosition { get; set; }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "Discovery Background Color",
-                 Description = "Semi-transparent fill used when regime is Discovery.",
-                 Order = 13, GroupName = "12. Regime & Dominance")]
-        public System.Windows.Media.Brush DiscoveryBgColor { get; set; }
-        [Browsable(false)]
-        public string DiscoveryBgColorSerialize
-        { get { return Serialize.BrushToString(DiscoveryBgColor); } set { DiscoveryBgColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "Auction Background Color",
-                 Description = "Semi-transparent fill used when regime is Auction.",
-                 Order = 14, GroupName = "12. Regime & Dominance")]
-        public System.Windows.Media.Brush AuctionBgColor { get; set; }
-        [Browsable(false)]
-        public string AuctionBgColorSerialize
-        { get { return Serialize.BrushToString(AuctionBgColor); } set { AuctionBgColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "Transition Background Color",
-                 Description = "Semi-transparent fill used when regime is Transition.",
-                 Order = 15, GroupName = "12. Regime & Dominance")]
-        public System.Windows.Media.Brush TransitionBgColor { get; set; }
-        [Browsable(false)]
-        public string TransitionBgColorSerialize
-        { get { return Serialize.BrushToString(TransitionBgColor); } set { TransitionBgColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "Buyer Dominance Color",
-                 Description = "Color used for buyer-side dominance text / accent.",
-                 Order = 16, GroupName = "12. Regime & Dominance")]
-        public System.Windows.Media.Brush BuyerDominanceColor { get; set; }
-        [Browsable(false)]
-        public string BuyerDominanceColorSerialize
-        { get { return Serialize.BrushToString(BuyerDominanceColor); } set { BuyerDominanceColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "Seller Dominance Color",
-                 Description = "Color used for seller-side dominance text / accent.",
-                 Order = 17, GroupName = "12. Regime & Dominance")]
-        public System.Windows.Media.Brush SellerDominanceColor { get; set; }
-        [Browsable(false)]
-        public string SellerDominanceColorSerialize
-        { get { return Serialize.BrushToString(SellerDominanceColor); } set { SellerDominanceColor = Serialize.StringToBrush(value); } }
-
-        #endregion
-
         #region Properties — Trade Signals
 
 
@@ -2466,32 +2236,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ExcessColor          = System.Windows.Media.Brushes.LimeGreen;
                 TPOVABoxColor        = System.Windows.Media.Brushes.RoyalBlue;
 
-                // Cluster Zone defaults
-
-                PrintLevelsAtSessionStart  = true;
-                PrintLevelsOnDemand        = true;
-
-                // Regime & Dominance defaults (non-lagging)
-                EnableRegimeDetection      = true;
-                DominanceWindowBars        = 8;
-                ControlWindowBars          = -1;
-                LogControlOnNewBar         = true;
-                LogVolumetricToControl    = true;
-                ControlLogContracts        = 10000;
-                ControlLogUntilFire        = true;
-                ControlLogStepContracts    = 0;
-                ControlLogBarSummary       = false;
-                DiscoveryThreshold         = 0.40;
-                AuctionThreshold           = -0.30;
-                ImbalanceIntensityFloor    = 0.55;
-                UseLevel2Book              = true;
-                L2DepthLevels              = 3;
-                L2DominanceWeight          = 0.35;
-                L2AbsorptionWeight         = 0.40;
-                ShowRegimeBackground       = true;
-                ShowRegimePanel            = true;
-                ShowRegimeHistoryStrips    = true;
-
                 // Trade signals // removed signal path   // ONLY filter: buy/sell must agree with who's in charge  // do not suppress by day type
                 SignalEndHHMM          = 1400;
                 ShowSignalLines        = true;   // draw entry / stop / ATR take-profit lines
@@ -2548,27 +2292,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EntryMaxOpposingSize       = 30;  // off — not used as a print filter
                 StopLossTicks          = 40;
                 TakeProfitTicks        = 40;  // never draw invalid/rejected markers
-                ShowRegimeDetailLine       = false;
-                ShowDepthHistoryStrip      = false;
-                RegimePanelPosition        = STVPPanelPosition.TopRight;
-
-                var discBg = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromArgb(45, 40, 120, 255));
-                discBg.Freeze();
-                DiscoveryBgColor = discBg;
-
-                var auctBg = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromArgb(45, 170, 100, 230));
-                auctBg.Freeze();
-                AuctionBgColor = auctBg;
-
-                var transBg = new System.Windows.Media.SolidColorBrush(
-                    System.Windows.Media.Color.FromArgb(25, 150, 150, 150));
-                transBg.Freeze();
-                TransitionBgColor = transBg;
-
-                BuyerDominanceColor  = System.Windows.Media.Brushes.LimeGreen;
-                SellerDominanceColor = System.Windows.Media.Brushes.OrangeRed;
             }
             else if (State == State.Configure)
             {
@@ -2596,7 +2319,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sessionRunningBid        = 0;
                 sessionRunningAsk        = 0;
                 sessionFinalDeltaHistory = new Queue<long>();
-                regimeHistoryRebuilt     = false;
                 signals                  = new List<TradeSignal>();
                 signalKeys               = new HashSet<string>();
                 vaFiredBarIndex          = -1;
@@ -2615,9 +2337,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sigSessionKey            = DateTime.MinValue;
                 eightyInit = false; eightyDone = false; eightySide = 0; eightyInsideSince = DateTime.MinValue;
                 lastRegimeBar            = -1;
-                regimeScoreAtBar         = new Dictionary<int, double>();
-                dominanceAtBar           = new Dictionary<int, double>();
-                regimeStateAtBar         = new Dictionary<int, STVPRegimeState>();
                 bookImbalanceAtBar       = new Dictionary<int, double>();
                 absorptionAtBar          = new Dictionary<int, double>();
                 bookFromLiveL2           = new Dictionary<int, bool>();
@@ -2666,9 +2385,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             else if (State == State.Realtime)
             {
-                // Historical load is finished (works with the market closed too).
-                if (!regimeHistoryRebuilt)
-                    RebuildRegimeHistory();
                 PrintSignalSummary();
                 AttachAutoTradeAccount();
             }
@@ -2713,11 +2429,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             // Depth is required for regime L2 terms and/or the wall monitor.
             // No State filter: Market Replay runs as State.Realtime and must pass through.
-            if (!UseLevel2Book && !EnableWallMonitor) return;
+            if (!EnableWallMonitor) return;
             if (e == null) return;
 
             // Only track the top N levels the user requested (position-index path — regime)
-            if (e.Position >= 0 && e.Position < L2DepthLevels)
+            if (e.Position >= 0 && e.Position < 3)
             {
                 if (e.MarketDataType == MarketDataType.Bid)
                 {
@@ -2748,7 +2464,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Recompute book imbalance across the configured depth
                 long bidSum = 0, askSum = 0;
-                for (int i = 0; i < L2DepthLevels; i++)
+                for (int i = 0; i < 3; i++)
                 {
                     long bs = 0, asz = 0;
                     l2BidDepth.TryGetValue(i, out bs);
@@ -3762,8 +3478,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // REALTIME in-charge Clear/Strong: evaluate on every tick (mid-bar),
                 // not only when the primary bar closes.
-                if (EnableRegimeDetection)
-                    UpdateRegimeAndDominanceRealtime(primaryBarIdx);
+                UpdateRegimeAndDominanceRealtime(primaryBarIdx);
 
                 // Live entry paths: MR + prior/naked level rejection only
                 if (State == State.Realtime)
@@ -3774,7 +3489,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Feed Level-2 absorption detector with this tick's aggressive volume
-            if (UseLevel2Book)
             {
                 if (upVol > 0)
                 {
@@ -3998,30 +3712,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentSession.FinalDelta = (long)cumulativeDeltaIndicator.DeltaClose[0];
 
                 // Non-lagging regime + dominance update (order-flow + structure only)
-                if (EnableRegimeDetection)
-                    UpdateRegimeAndDominance();
+                UpdateRegimeAndDominance();
             }
 
             lastBarTime = barTime;
 
-            // Last historical bar reached: fill in the whole regime / dominance / depth history
-            if (EnableRegimeDetection && !regimeHistoryRebuilt
-                && State == State.Historical && CurrentBars[0] >= BarsArray[0].Count - 1)
-                RebuildRegimeHistory();
 
             // Trade signals: evaluate every newly CLOSED primary bar (history and live alike)
             EvaluateSignalsPending();
             EvaluateIntrabarFailedBreakouts();
             CheckLimitEntryExpiry();
 
-            // On-demand print — flag was set by OnRender (UI thread), executed here
-            // on the data thread where sessions list access is safe
-            if (printRequested && sessions != null && sessions.Count >= 2)
-            {
-                printRequested = false;
-                PrintPriorSession(sessions[sessions.Count - 2]);
-                PrintNakedLevels();
-            }
         }
 
         #endregion
@@ -4173,9 +3874,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             ArchiveLevelSession(currentSession);   // LevelAccessor
 
-            // Auto-print prior session levels at session start
-            if (PrintLevelsAtSessionStart && State == State.Realtime && priorSession != null)
-                PrintPriorSession(priorSession);
         }
 
         /// <summary>
@@ -4218,185 +3916,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        // Ctrl+P sets this flag in OnRender (UI thread).
-        // Actual printing happens in ProcessPrimaryBar (data thread) — same thread
-        // as tick/session processing, so sessions list access is safe.
-        private bool printKeyActive  = false;
-        private bool printRequested  = false;
-
-        /// <summary>
-        /// Prints prior session levels (p prefix) to the Output window.
-        /// Called automatically at session start and on demand via Ctrl+P.
-        /// </summary>
-        private void PrintPriorSession(SessionProfile s)
-        {
-            string LP(int lv)   { return (lv * rowSize).ToString("F2"); }
-            string HP(int lv)   { return (lv * rowSize + rowSize).ToString("F2"); }
-            string FP(double p) { return p.ToString("F2"); }
-
-            string vpoc   = s.VPOCLevel > 0                ? LP(s.VPOCLevel)   : "N/A";
-            string vvah   = s.VVAH      > 0                ? HP(s.VVAH)        : "N/A";
-            string vval   = s.VVAL      > 0                ? LP(s.VVAL)        : "N/A";
-            string sd2h   = s.SD2H      > 0                ? HP(s.SD2H)        : "N/A";
-            string sd2l   = s.SD2L      > 0                ? LP(s.SD2L)        : "N/A";
-            string sd3h   = s.SD3H      > 0                ? HP(s.SD3H)        : "N/A";
-            string sd3l   = s.SD3L      > 0                ? LP(s.SD3L)        : "N/A";
-            string tpopoc = s.POCLevel  > 0                ? LP(s.POCLevel)    : "N/A";
-            string tpovah = s.TPOVAH    > 0                ? HP(s.TPOVAH)      : "N/A";
-            string tpoval = s.TPOVAL    > 0                ? LP(s.TPOVAL)      : "N/A";
-            string tpo2h  = s.TPOSD2H   > 0               ? HP(s.TPOSD2H)     : "N/A";
-            string tpo2l  = s.TPOSD2L   > 0               ? LP(s.TPOSD2L)     : "N/A";
-            string tpo3h  = s.TPOSD3H   > 0               ? HP(s.TPOSD3H)     : "N/A";
-            string tpo3l  = s.TPOSD3L   > 0               ? LP(s.TPOSD3L)     : "N/A";
-            string phi    = s.SessionHigh > double.MinValue ? FP(s.SessionHigh) : "N/A";
-            string plo    = s.SessionLow  < double.MaxValue ? FP(s.SessionLow)  : "N/A";
-            string rthO   = s.RTHOpen     > 0              ? FP(s.RTHOpen)      : "N/A";
-            string rthH   = s.RTHHigh    > double.MinValue ? FP(s.RTHHigh)      : "N/A";
-            string rthL   = s.RTHLow     < double.MaxValue ? FP(s.RTHLow)       : "N/A";
-
-            var    sb  = new System.Text.StringBuilder();
-            string sep = new string('═', 58);
-            string dsh = new string('─', 58);
-
-            sb.AppendLine();
-            sb.AppendLine(sep);
-            sb.AppendLine("  PRIOR SESSION  " + s.SessionDate.ToString("ddd MM/dd/yyyy"));
-            sb.AppendLine(sep);
-            sb.AppendLine("  Volume Levels");
-            sb.AppendLine("    pVPOC    : " + vpoc);
-            sb.AppendLine("    pVVAH    : " + vvah);
-            sb.AppendLine("    pVVAL    : " + vval);
-            sb.AppendLine("    pSD2H    : " + sd2h);
-            sb.AppendLine("    pSD2L    : " + sd2l);
-            sb.AppendLine("    pSD3H    : " + sd3h);
-            sb.AppendLine("    pSD3L    : " + sd3l);
-            sb.AppendLine("  TPO Levels");
-            sb.AppendLine("    pTPOPOC  : " + tpopoc);
-            sb.AppendLine("    pTPOVAH  : " + tpovah);
-            sb.AppendLine("    pTPOVAL  : " + tpoval);
-            sb.AppendLine("    pTPOSD2H : " + tpo2h);
-            sb.AppendLine("    pTPOSD2L : " + tpo2l);
-            sb.AppendLine("    pTPOSD3H : " + tpo3h);
-            sb.AppendLine("    pTPOSD3L : " + tpo3l);
-            sb.AppendLine("  Session Bounds");
-            sb.AppendLine("    pHI : " + phi + "    pRTHHigh : " + rthH);
-            sb.AppendLine("    pLO : " + plo + "    pRTHLow  : " + rthL);
-            sb.AppendLine("    RTHOpen  : " + rthO + "    DayType : " + s.Classification.ToString());
-            sb.AppendLine();
-            sb.AppendLine(dsh);
-            sb.AppendLine("  PASTE INTO AI CONTEXT BLOCK");
-            sb.AppendLine(dsh);
-            sb.AppendLine("  Date          : " + s.SessionDate.ToString("yyyy-MM-dd"));
-            sb.AppendLine("  pVPOC         : " + vpoc);
-            sb.AppendLine("  pVVAH         : " + vvah);
-            sb.AppendLine("  pVVAL         : " + vval);
-            sb.AppendLine("  pSD2H         : " + sd2h);
-            sb.AppendLine("  pSD2L         : " + sd2l);
-            sb.AppendLine("  pSD3H         : " + sd3h);
-            sb.AppendLine("  pSD3L         : " + sd3l);
-            sb.AppendLine("  pTPOPOC       : " + tpopoc);
-            sb.AppendLine("  pTPOVAH       : " + tpovah);
-            sb.AppendLine("  pTPOVAL       : " + tpoval);
-            sb.AppendLine("  pTPOSD2H      : " + tpo2h);
-            sb.AppendLine("  pTPOSD2L      : " + tpo2l);
-            sb.AppendLine("  pHI           : " + phi);
-            sb.AppendLine("  pLO           : " + plo);
-            sb.AppendLine("  RTH Open      : (fill in at 08:30 CT)");
-            sb.AppendLine("  Overnight Low : (fill in pre-market)");
-            sb.AppendLine("  Macro Context : ");
-            sb.AppendLine("  FOMC Status   : ");
-            sb.AppendLine(sep);
-
-            Print(sb.ToString());
-        }
-
-        /// <summary>
-        /// Prints all active naked levels — levels from sessions OLDER than the
-        /// prior session whose extension lines are still active on the chart
-        /// (i.e. price has not yet reached them, tested flag = false).
-        /// Labeled with "n" prefix and session date. Sorted price descending,
-        /// split above and below current price.
-        /// </summary>
-        private void PrintNakedLevels()
-        {
-            if (sessions == null || sessions.Count < 2) return;
-
-            // Sorted descending by price
-            var levels = new SortedDictionary<double, string>(
-                Comparer<double>.Create((a, b) => b.CompareTo(a)));
-
-            // Walk every completed prior session — same set the chart walks in
-            // CheckNakedLevelTests(). If the tested flag is false the extension
-            // line is still active on the chart, so it belongs in this list.
-            // Skip sessions[Count-1] which is the current developing session.
-            for (int i = 0; i < sessions.Count - 1; i++)
-            {
-                SessionProfile s = sessions[i];
-                if (s.VolumeAtPrice.Count == 0) continue;
-
-                string date = s.SessionDate.ToString("MM/dd");
-
-                System.Action<double, string> add = (price, label) =>
-                {
-                    string entry = "  n" + label + "  " + price.ToString("F2") + "  (" + date + ")";
-                    if (!levels.ContainsKey(price))
-                        levels[price] = entry;
-                    else
-                        levels[price] = levels[price] + " + n" + label.TrimStart();
-                };
-
-                // Volume naked levels
-                if (!s.VPOCTested  && s.VPOCLevel > 0) add(s.VPOCLevel * rowSize,          "VPOC    ");
-                if (!s.VVAHTested  && s.VVAH      > 0) add(s.VVAH * rowSize + rowSize,      "VVAH    ");
-                if (!s.VVALTested  && s.VVAL      > 0) add(s.VVAL * rowSize,                "VVAL    ");
-                if (!s.SD2HTested  && s.SD2H      > 0) add(s.SD2H * rowSize + rowSize,      "SD2H    ");
-                if (!s.SD2LTested  && s.SD2L      > 0) add(s.SD2L * rowSize,                "SD2L    ");
-                if (!s.SD3HTested  && s.SD3H      > 0) add(s.SD3H * rowSize + rowSize,      "SD3H    ");
-                if (!s.SD3LTested  && s.SD3L      > 0) add(s.SD3L * rowSize,                "SD3L    ");
-
-                // TPO naked levels
-                if (!s.TPOPOCTested  && s.POCLevel  > 0) add(s.POCLevel * rowSize,          "TPOPOC  ");
-                if (!s.TPOVAHTested  && s.TPOVAH    > 0) add(s.TPOVAH * rowSize + rowSize,  "TPOVAH  ");
-                if (!s.TPOVALTested  && s.TPOVAL    > 0) add(s.TPOVAL * rowSize,            "TPOVAL  ");
-                if (!s.TPOSD2HTested && s.TPOSD2H   > 0) add(s.TPOSD2H * rowSize + rowSize, "TPOSD2H ");
-                if (!s.TPOSD2LTested && s.TPOSD2L   > 0) add(s.TPOSD2L * rowSize,           "TPOSD2L ");
-                if (!s.TPOSD3HTested && s.TPOSD3H   > 0) add(s.TPOSD3H * rowSize + rowSize, "TPOSD3H ");
-                if (!s.TPOSD3LTested && s.TPOSD3L   > 0) add(s.TPOSD3L * rowSize,           "TPOSD3L ");
-
-                // Session high/low naked levels
-                if (!s.HighTested && s.SessionHigh > double.MinValue) add(s.SessionHigh, "HI      ");
-                if (!s.LowTested  && s.SessionLow  < double.MaxValue) add(s.SessionLow,  "LO      ");
-            }
-
-            // Use currentSession.ClosePrice — updated every tick, reliable in OnRender context
-            // Close[0] is not safe to use from OnRender as it may reference a stale bar
-            double cp  = currentSession != null && currentSession.ClosePrice > 0
-                       ? currentSession.ClosePrice
-                       : (sessions.Count > 0 ? sessions[sessions.Count - 1].ClosePrice : 0);
-            var    sb  = new System.Text.StringBuilder();
-            string dsh = new string('─', 58);
-
-            sb.AppendLine();
-            sb.AppendLine(dsh);
-            sb.AppendLine("  NAKED LEVELS — all sessions, extension lines still active");
-            sb.AppendLine("  Current Price: " + cp.ToString("F2"));
-            sb.AppendLine(dsh);
-
-            bool anyAbove = false;
-            foreach (KeyValuePair<double, string> kvp in levels)
-                if (kvp.Key > cp) { sb.AppendLine(kvp.Value); anyAbove = true; }
-            if (!anyAbove) sb.AppendLine("  (none above)");
-
-            sb.AppendLine("  ─── " + cp.ToString("F2") + " ───");
-
-            bool anyBelow = false;
-            foreach (KeyValuePair<double, string> kvp in levels)
-                if (kvp.Key <= cp) { sb.AppendLine(kvp.Value); anyBelow = true; }
-            if (!anyBelow) sb.AppendLine("  (none below)");
-
-            sb.AppendLine(dsh);
-            Print(sb.ToString());
-        }
 
         private void StartNewTPOPeriod(DateTime tickTime, bool isRTH)
         {
@@ -4999,24 +4518,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             base.OnRender(chartControl, chartScale);
 
-            // Ctrl+P detected — set flag only. Printing happens in ProcessPrimaryBar
-            // on the data thread where sessions list access is safe.
-            if (PrintLevelsOnDemand && sessions != null && sessions.Count >= 2)
-            {
-                bool ctrl = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.LeftCtrl)
-                         || System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.RightCtrl);
-                bool p    = System.Windows.Input.Keyboard.IsKeyDown(System.Windows.Input.Key.P);
-
-                if (ctrl && p && !printKeyActive)
-                {
-                    printKeyActive = true;
-                    printRequested = true;
-                }
-                else if (!ctrl || !p)
-                {
-                    printKeyActive = false;
-                }
-            }
 
             if (sessions == null || sessions.Count == 0) return;
             if (ChartBars == null) return;
@@ -5032,9 +4533,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 CreateResources();
             if (!resourcesCreated) return;
 
-            // Regime background + panel (drawn first so it sits under profiles)
-            if (EnableRegimeDetection)
-                RenderRegimeOverlay(chartControl, chartScale);
 
             // Identify most-recently-completed session for "p" vs "n" prefixing
             mostRecentCompletedSession = null;
@@ -7170,9 +6668,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// </summary>
         private void UpdateRegimeAndDominanceRealtime(int primaryBarIdx)
         {
-            if (!EnableRegimeDetection) return;
+
             if (currentSession == null) return;
-            if (primaryBarIdx < DominanceWindowBars + 2) return;
+            if (primaryBarIdx < 10) return;
             if (BarsArray == null || BarsArray[0] == null) return;
             if (primaryBarIdx < 0 || primaryBarIdx >= BarsArray[0].Count) return;
 
@@ -7186,10 +6684,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Ensure flip check ran for this primary bar with the latest dominance
             // (UpdateRegimeAndDominance already calls CheckInChargeClearStrongFlip).
             // Force a second check in case bar index differed.
-            if (dominanceAtBar.ContainsKey(primaryBarIdx))
-                CheckInChargeClearStrongFlip(primaryBarIdx, dominanceAtBar[primaryBarIdx]);
-            else
-                CheckInChargeClearStrongFlip(primaryBarIdx, dominance);
+            CheckInChargeClearStrongFlip(primaryBarIdx, dominance);
             // Vacuum (VU/VD) is evaluated on CLOSED bars only — see EvaluateVacuumFailureAt
             EvaluateIntrabarFailedBreakouts();
             CheckLimitEntryExpiry();
@@ -7197,10 +6692,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private void UpdateRegimeAndDominance()
         {
-            if (CurrentBars[0] < DominanceWindowBars + 2) return;
+            if (CurrentBars[0] < 10) return;
             if (currentSession == null) return;
 
-            int window = DominanceWindowBars;
+            int window = 8;
             int barIdx = CurrentBars[0];
 
             // ── 1. Aggressive imbalance intensity over the window ────────────────
@@ -7264,7 +6759,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Intensity above floor is the primary driver; streak amplifies it;
             // open single prints add a structural boost.
             double oneSided = 0.0;
-            if (intensity >= ImbalanceIntensityFloor)
+            if (intensity >= 0.55)
             {
                 oneSided = intensity;
                 oneSided = Math.Min(1.0, oneSided + 0.25 * streakScore);
@@ -7288,8 +6783,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             double absorp   = 0.0;
             bool   fromLive = false;
 
-            bool l2Live = UseLevel2Book
-                && State == State.Realtime
+            bool l2Live = State == State.Realtime
                 && l2LastUpdateTime != DateTime.MinValue
                 && (GetMarketNow() - l2LastUpdateTime).TotalSeconds < 5.0;
 
@@ -7299,7 +6793,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 absorp   = l2AbsorptionScore;
                 fromLive = true;
             }
-            else if (UseLevel2Book)
+            else
             {
                 // Tick-derived depth proxy (historical + live when L2 not flowing)
                 // Book imbalance proxy: opposing aggressor residual.
@@ -7350,17 +6844,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 balance += Math.Min(0.35, kurt * 0.15);
             if (!hasOpenSinglePrints && currentSession.TPOsAtPrice.Count > 8)
                 balance += 0.15;
-            if (UseLevel2Book && absorp > 0.15)
-                balance += L2AbsorptionWeight * absorp;
+            if (absorp > 0.15)
+                balance += 0.40 * absorp;
             balance = Math.Min(1.0, balance);
 
             // ── 7. RegimeScore & state ───────────────────────────────────────────
             regimeScore = oneSided - balance;          // −1 … +1
             regimeScore = Math.Max(-1.0, Math.Min(1.0, regimeScore));
 
-            if (regimeScore >= DiscoveryThreshold)
+            if (regimeScore >= 0.40)
                 regimeState = STVPRegimeState.Discovery;
-            else if (regimeScore <= AuctionThreshold)
+            else if (regimeScore <= -0.30)
                 regimeState = STVPRegimeState.Auction;
             else
                 regimeState = STVPRegimeState.Transition;
@@ -7379,16 +6873,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double cL = useFb ? fbLow  : Low[0],   cC = useFb ? fbLast : Close[0];
                 dominance = ComputeControl(cAsk, cBid, cO, cH, cL, cC,
                                            cwd, out bd, out pd);
-                if (LogControlOnNewBar && State == State.Realtime)
-                    LogControlForBar(barIdx, cAsk + cBid, dominance, bd, pd, cwd);
             }
 
             lastRegimeBar = barIdx;
 
             // Persist for historical rendering (regime + depth always stored)
-            regimeScoreAtBar[barIdx]   = regimeScore;
-            dominanceAtBar[barIdx]     = dominance;
-            regimeStateAtBar[barIdx]   = regimeState;
             bookImbalanceAtBar[barIdx] = bookImb;
             absorptionAtBar[barIdx]    = absorp;
             bookFromLiveL2[barIdx]     = fromLive;
@@ -7399,223 +6888,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Entries: EvaluateMeanRevertVAEdge + EvaluateValueAreaRejection (+ optional IL/IZ) from tick path
         }
 
-        /// <summary>Realtime Control log: one Output line per tick from the start of a new bar until the bar
-        /// reaches ControlLogContracts. Only prints when the bar volume changed since the last line.</summary>
-
-        /// <summary>
-        /// If primary series is NT8 Volumetric, dump bid/ask footprint of the bar into the Output window.
-        /// Lets you compare volumetric rows to our tick-built control / imbalance levels (YM or NQ tick charts).
-        /// </summary>
-        private void LogVolumetricBarSnapshot(int barIdx)
-        {
-            if (!LogVolumetricToControl || State != State.Realtime) return;
-            if (BarsArray == null || BarsArray.Length == 0 || barIdx < 0) return;
-
-            try
-            {
-                var volType = BarsArray[0].BarsType as VolumetricBarsType;
-                if (volType == null)
-                {
-                    // One-time notice per session when user expected volumetric
-                    if (barIdx == 0 || barIdx == 1)
-                        Print("SessionTPOVolumeProfile VOLUMETRIC: primary series is not Volumetric bars (type="
-                            + (BarsArray[0].BarsType != null ? BarsArray[0].BarsType.Name : "?")
-                            + "). Use Chart Style → Volumetric to enable footprint rows in the Control log.");
-                    return;
-                }
-
-                if (volType.Volumes == null || barIdx >= volType.Volumes.Length || volType.Volumes[barIdx] == null)
-                    return;
-
-                var vol = volType.Volumes[barIdx];
-                long barDelta = 0;
-                long total = 0;
-                try { barDelta = vol.BarDelta; } catch { }
-                try { total = vol.TotalVolume; } catch { total = 0; }
-
-                double lo = Low[0], hi = High[0];
-                if (lo <= 0 || hi <= 0 || hi < lo) return;
-
-                long maxBid = 0, maxAsk = 0, maxTot = 0;
-                double maxBidPx = 0, maxAskPx = 0, maxTotPx = 0;
-                int buyImbRows = 0, sellImbRows = 0;
-                long summed = 0;
-
-                // Walk price levels in the bar (cap rows logged to avoid spam)
-                var topImb = new List<string>();
-                int levelsSeen = 0;
-                for (double p = lo; p <= hi + TickSize * 0.1; p = Instrument.MasterInstrument.RoundToTickSize(p + TickSize))
-                {
-                    levelsSeen++;
-                    if (levelsSeen > 500) break;
-
-                    long bid = 0, ask = 0;
-                    try { bid = vol.GetBidVolumeForPrice(p); } catch { }
-                    try { ask = vol.GetAskVolumeForPrice(p); } catch { }
-                    long rowTot = bid + ask;
-                    if (rowTot <= 0) continue;
-                    summed += rowTot;
-
-                    if (bid > maxBid) { maxBid = bid; maxBidPx = p; }
-                    if (ask > maxAsk) { maxAsk = ask; maxAskPx = p; }
-                    if (rowTot > maxTot) { maxTot = rowTot; maxTotPx = p; }
-
-                    // Diagonal imbalance vs one tick below/above (same definition as profile marks)
-                    long bidBelow = 0, askAbove = 0;
-                    double pBelow = Instrument.MasterInstrument.RoundToTickSize(p - TickSize);
-                    double pAbove = Instrument.MasterInstrument.RoundToTickSize(p + TickSize);
-                    try { bidBelow = vol.GetBidVolumeForPrice(pBelow); } catch { }
-                    try { askAbove = vol.GetAskVolumeForPrice(pAbove); } catch { }
-
-                    if (IsDiagonalImbalance(ask, bidBelow))
-                    {
-                        buyImbRows++;
-                        if (topImb.Count < 8)
-                            topImb.Add("BUY@" + p.ToString("F2") + " ask=" + ask + " x" + DiagonalRatio(ask, bidBelow).ToString("F1"));
-                    }
-                    if (IsDiagonalImbalance(bid, askAbove))
-                    {
-                        sellImbRows++;
-                        if (topImb.Count < 8)
-                            topImb.Add("SELL@" + p.ToString("F2") + " bid=" + bid + " x" + DiagonalRatio(bid, askAbove).ToString("F1"));
-                    }
-                }
-
-                if (total <= 0) total = summed;
-
-                Print("SessionTPOVolumeProfile VOLUMETRIC bar " + Time[0].ToString("HH:mm:ss")
-                    + "  total=" + total
-                    + "  delta=" + barDelta.ToString("+0;-0;0")
-                    + "  POC-in-bar=" + maxTotPx.ToString("F2") + " (" + maxTot + ")"
-                    + "  maxBid=" + maxBidPx.ToString("F2") + "/" + maxBid
-                    + "  maxAsk=" + maxAskPx.ToString("F2") + "/" + maxAsk
-                    + "  imbRows buy=" + buyImbRows + " sell=" + sellImbRows);
-
-                if (topImb.Count > 0)
-                    Print("SessionTPOVolumeProfile VOLUMETRIC imbalances: " + string.Join(" | ", topImb));
-            }
-            catch (Exception ex)
-            {
-                Print("SessionTPOVolumeProfile VOLUMETRIC log error: " + ex.Message);
-            }
-        }
-
-
-        private void LogControlForBar(int barIdx, long barVol, double ctrl, double barDelta, double priceDir, double windowDom)
-        {
-            double armThr = ICArmThreshold();
-            int zone = ctrl >= armThr ? 1 : (ctrl <= -armThr ? -1 : 0);
-
-            if (barIdx != ctrlLogBar)
-            {
-                if (ControlLogBarSummary && ctrlLogBar >= 0 && ctrlStatLastVol >= 0)
-                {
-                    Print("BAR SUMMARY " + ctrlStatStart.ToString("HH:mm:ss") + "  contracts=" + ctrlStatLastVol
-                        + "  finalCtrl=" + ctrlStatLast.ToString("+0.00;-0.00;0.00")
-                        + "  peak=" + ctrlStatMax.ToString("+0.00;-0.00;0.00") + "@" + ctrlStatMaxVol
-                        + "  trough=" + ctrlStatMin.ToString("+0.00;-0.00;0.00") + "@" + ctrlStatMinVol
-                        + "  firstArm=" + (ctrlStatFirstArmSide > 0 ? "BUY@" + ctrlStatFirstArmVol : (ctrlStatFirstArmSide < 0 ? "SELL@" + ctrlStatFirstArmVol : "none"))
-                        + "  zoneChanges=" + ctrlStatFlips + "  lastChange@" + ctrlStatLastFlipVol
-                        + "  finalZone=" + (ctrlStatZone > 0 ? "BUY" : (ctrlStatZone < 0 ? "SELL" : "neutral")));
-                }
-                ctrlLogBar     = barIdx;
-                ctrlLogVol     = -1;
-                ctrlLogDone    = false;
-                ctrlLogReached = false;
-                ctrlLogZone    = 99;
-                ctrlLogNextStep = 0;
-                ctrlStatStart  = Time[0];
-                ctrlStatLastVol = -1; ctrlStatMaxVol = 0; ctrlStatMinVol = 0; ctrlStatLastFlipVol = 0; ctrlStatFirstArmVol = 0;
-                ctrlStatLast = 0; ctrlStatMax = double.MinValue; ctrlStatMin = double.MaxValue;
-                ctrlStatFlips = 0; ctrlStatFirstArmSide = 0; ctrlStatZone = 99;
-                Print("SessionTPOVolumeProfile CONTROL LOG ---- new bar " + Time[0].ToString("HH:mm:ss")
-                    + "  (logging until " + ControlLogContracts + " contracts" + (ControlLogUntilFire ? " and IC fires" : "")
-                    + ", every " + (ControlLogStepContracts > 0 ? ControlLogStepContracts + " contracts" : "tick") + " + zone changes"
-                    + ", IC arms at +/-" + armThr.ToString("0.00") + ")");
-                LogVolumetricBarSnapshot(barIdx);
-            }
-
-            // Per-bar stats run for the whole bar, independent of the print window
-            if (barVol != ctrlStatLastVol)
-            {
-                ctrlStatLastVol = barVol;
-                ctrlStatLast = ctrl;
-                if (ctrl > ctrlStatMax) { ctrlStatMax = ctrl; ctrlStatMaxVol = barVol; }
-                if (ctrl < ctrlStatMin) { ctrlStatMin = ctrl; ctrlStatMinVol = barVol; }
-                if (zone != ctrlStatZone)
-                {
-                    if (ctrlStatZone != 99) ctrlStatFlips++;
-                    ctrlStatZone = zone;
-                    ctrlStatLastFlipVol = barVol;
-                    if (zone != 0 && ctrlStatFirstArmSide == 0) { ctrlStatFirstArmSide = zone; ctrlStatFirstArmVol = barVol; }
-                }
-            }
-
-            if (ctrlLogReached && (!ControlLogUntilFire || ctrlLogFiredBar == barIdx)) ctrlLogDone = true;
-            if (ctrlLogDone || barVol == ctrlLogVol) return;
-            ctrlLogVol = barVol;
-
-            bool crossing = !ctrlLogReached && barVol >= ControlLogContracts;
-            if (crossing) ctrlLogReached = true;
-            bool firstLine = ctrlLogZone == 99;
-            bool zoneChanged = zone != ctrlLogZone && !firstLine;
-            bool stepHit = ControlLogStepContracts <= 0 || barVol >= ctrlLogNextStep;
-            // Print on: first line of the bar, every N contracts, any arm-zone change, or the count crossing
-            if (!(firstLine || stepHit || zoneChanged || crossing)) return;
-            if (ControlLogStepContracts > 0 && barVol >= ctrlLogNextStep)
-                ctrlLogNextStep = (barVol / ControlLogStepContracts + 1) * (long)ControlLogStepContracts;
-            ctrlLogZone = zone;
-
-            string tag = zone > 0 ? "  << IC arm BUY" : (zone < 0 ? "  << IC arm SELL" : "");
-            Print("CTRL " + Time[0].ToString("HH:mm:ss.fff")
-                + "  px=" + Close[0].ToString("F2")
-                + "  vol=" + barVol
-                + "  ctrl=" + ctrl.ToString("+0.00;-0.00;0.00")
-                + "  (barDelta=" + barDelta.ToString("+0.00;-0.00;0.00")
-                + " priceDir=" + priceDir.ToString("+0.00;-0.00;0.00")
-                + " persist=" + windowDom.ToString("+0.00;-0.00;0.00") + ")"
-                + tag + (zoneChanged ? "  [zone change]" : "")
-                + (crossing ? "  ** " + ControlLogContracts + " CONTRACTS REACHED **" : ""));
-        }
-
-        /// <summary>Control log: marks the moment IN CHARGE actually fires (immediate path).
-        /// The persist path already prints its own IC FIRE line.</summary>
-        private void IcLogImmediateFire(int barIdx, int side, double dom)
-        {
-            ctrlLogFiredBar = barIdx;
-            if (!LogControlOnNewBar || State != State.Realtime) return;
-            long a = 0, b = 0;
-            primaryBarAskVol.TryGetValue(barIdx, out a);
-            primaryBarBidVol.TryGetValue(barIdx, out b);
-            double pxFire = 0;
-            try { if (Close != null && Close.Count > 0) pxFire = Close[0]; } catch { }
-            Print("SessionTPOVolumeProfile IC FIRE " + (side > 0 ? "BUY" : "SELL") + " (immediate)"
-                + "  " + Time[0].ToString("HH:mm:ss.fff") + "  px=" + pxFire.ToString("F2")
-                + "  vol=" + (a + b) + "  control=" + dom.ToString("+0.00;-0.00")
-                + "  armAt=+/-" + ICArmThreshold().ToString("0.00"));
-            if (false && pxFire > 0)
-                Print("SessionTPOVolumeProfile IC CTX " + FormatICAuctionContext(side, pxFire));
-        }
-
-        /// <summary>Aggressor balance over the Control window (ControlWindowBars) ending at 'bar'.
-        /// -1 or equal to the Dominance Window = reuse the regime window value; 0 = unused.</summary>
+        /// <summary>Aggressor balance over the regime window ending at 'bar'.</summary>
         private double ControlWindowDom(int bar, double regimeWindowDom)
         {
-            int w = ControlWindowBars;
-            if (w < 0 || w == DominanceWindowBars) return regimeWindowDom;
-            if (w == 0) return 0.0;
-            long a = 0, b = 0;
-            for (int i = 0; i < w; i++)
-            {
-                int idx = bar - i;
-                if (idx < 0) break;
-                long av = 0, bv = 0;
-                primaryBarAskVol.TryGetValue(idx, out av);
-                primaryBarBidVol.TryGetValue(idx, out bv);
-                a += av; b += bv;
-            }
-            long t = a + b;
-            return t > 0 ? (double)(a - b) / t : 0.0;
+            return regimeWindowDom;
         }
 
         /// <summary>
@@ -7633,19 +6909,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             barDelta = tot > 0 ? (double)(barAsk - barBid) / tot : 0.0;
             double range = high - low;
             priceDir = range > 0 ? (close - open) / range : 0.0;
-            double c;
-            if (ControlWindowBars == 0)
-                c = (0.40 * barDelta + 0.30 * priceDir) / 0.70;   // persistence off: reweight so Control still spans -1..+1
-            else
-                c = 0.40 * barDelta + 0.30 * priceDir + 0.30 * windowDom;
+            double c = 0.40 * barDelta + 0.30 * priceDir + 0.30 * windowDom;
             return Math.Max(-1.0, Math.Min(1.0, c));
-        }
-
-        private float GetRegimePanelHeight()
-        {
-            float h = false ? 56f : 42f;
-            if (ShowRegimeDetailLine) h += 30f;
-            return h;
         }
 
         /// <summary>
@@ -7662,7 +6927,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             barDelta = 0; priceDir = 0; windowDom = 0;
 
             Bars pb = BarsArray[0];
-            int window = DominanceWindowBars;
+            int window = 8;
             if (pb == null || bar < window + 2 || bar >= pb.Count) return false;
 
             long winAsk = 0, winBid = 0;
@@ -7694,7 +6959,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             double streakScore = (double)same / window;
 
             double oneSided;
-            if (intensity >= ImbalanceIntensityFloor)
+            if (intensity >= 0.55)
                 oneSided = Math.Min(1.0, intensity + 0.25 * streakScore);
             else
                 oneSided = 0.35 * streakScore;
@@ -7703,7 +6968,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             primaryBarAskVol.TryGetValue(bar, out barAsk);
             primaryBarBidVol.TryGetValue(bar, out barBid);
 
-            if (UseLevel2Book)
             {
                 long barTot = barAsk + barBid;
                 if (barTot > 0)
@@ -7721,13 +6985,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             double balance = (1.0 - intensity) * 0.55 + 0.15;
-            if (UseLevel2Book && absorp > 0.15)
-                balance += L2AbsorptionWeight * absorp;
+            if (absorp > 0.15)
+                balance += 0.40 * absorp;
             balance = Math.Min(1.0, balance);
 
             score = Math.Max(-1.0, Math.Min(1.0, oneSided - balance));
-            st = score >= DiscoveryThreshold ? STVPRegimeState.Discovery
-               : (score <= AuctionThreshold ? STVPRegimeState.Auction
+            st = score >= 0.40 ? STVPRegimeState.Discovery
+               : (score <= -0.30 ? STVPRegimeState.Auction
                                             : STVPRegimeState.Transition);
 
             dom = ComputeControl(barAsk, barBid, op, pb.GetHigh(bar), pb.GetLow(bar), cl,
@@ -7735,335 +6999,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             return true;
         }
 
-        /// <summary>
-        /// Rebuilds regime / control / depth for EVERY loaded bar from the stored per-bar
-        /// aggressive bid/ask volume, so history never depends on having watched the chart live.
-        /// Bars already stored by the live engine are left alone. Session-structure terms
-        /// (TPO kurtosis, open single prints) can't be reconstructed per bar, so a typical
-        /// developed-profile constant is used for those bars.
-        /// </summary>
-        private void RebuildRegimeHistory()
-        {
-            regimeHistoryRebuilt = true;
-            if (!EnableRegimeDetection || BarsArray == null || BarsArray[0] == null) return;
-
-            Bars pb = BarsArray[0];
-            int count  = pb.Count;
-            int window = DominanceWindowBars;
-            int filled = 0, noVol = 0, kept = 0;
-            int lastFilled = -1;
-
-            for (int bar = window + 2; bar < count; bar++)
-            {
-                if (regimeStateAtBar.ContainsKey(bar)) { kept++; continue; }
-
-                double score, dom, bookImb, absorp, bd, pd, wd;
-                STVPRegimeState st;
-                if (!ComputeRegimeAtBar(bar, out score, out dom, out st, out bookImb, out absorp,
-                                        out bd, out pd, out wd))
-                { noVol++; continue; }
-
-                regimeScoreAtBar[bar]   = score;
-                dominanceAtBar[bar]     = dom;
-                regimeStateAtBar[bar]   = st;
-                bookImbalanceAtBar[bar] = bookImb;
-                absorptionAtBar[bar]    = absorp;
-                bookFromLiveL2[bar]     = false;
-                filled++;
-                lastFilled = bar;
-
-                if (count - bar <= 6)
-                    Print("  bar " + bar + " " + pb.GetTime(bar).ToString("MM/dd HH:mm")
-                        + "  barDelta " + bd.ToString("+0.00;-0.00")
-                        + "  priceDir " + pd.ToString("+0.00;-0.00")
-                        + "  window " + wd.ToString("+0.00;-0.00")
-                        + "  => control " + dom.ToString("+0.00;-0.00"));
-            }
-
-            // Panel values on a closed market: seed from the newest stored bar
-            if (lastRegimeBar < 0 && lastFilled >= 0)
-            {
-                lastRegimeBar = lastFilled;
-                regimeScore   = regimeScoreAtBar[lastFilled];
-                dominance     = dominanceAtBar[lastFilled];
-                regimeState   = regimeStateAtBar[lastFilled];
-            }
-
-            Print("SessionTPOVolumeProfile regime history: bars=" + count
-                + " rebuilt=" + filled + " alreadyStored=" + kept
-                + " noTickVolume=" + noVol
-                + (noVol > 0 ? "  <-- those bars have no tick data loaded (check Days to load / tick history)" : ""));
-
-            // Walk history once so Clear/Strong flips get chart marks on load
-            ScanInChargeFlipsFromHistory();
-        }
-
-        /// <summary>
-        /// Historical strips, one cell per bar:
-        ///   Row 1  MARKET     blue = Price Discovery, purple = Auction, grey = Transition
-        ///   Row 2  IN CHARGE  green = buyers, orange = sellers (brighter = stronger)
-        ///   Row 3  DEPTH      optional / advanced
-        /// </summary>
-        private void RenderRegimeHistoryStrips(ChartControl chartControl)
-        {
-            if (ChartPanel == null || ChartBars == null) return;
-            if (regimeStateAtBar == null || regimeStateAtBar.Count == 0) return;
-            if (regimeBuyerBrush == null || regimeSellerBrush == null) return;
-
-            int fromBar = Math.Max(0, ChartBars.FromIndex);
-            int toBar   = Math.Min(ChartBars.Count - 1, ChartBars.ToIndex);
-            if (toBar < fromBar) return;
-
-            float spacing = 4f;
-            if (toBar > fromBar)
-                spacing = Math.Max(2f, chartControl.GetXByBarIndex(ChartBars, fromBar + 1)
-                                     - chartControl.GetXByBarIndex(ChartBars, fromBar));
-
-            const float stripH = 10f;
-            float y1 = ChartPanel.Y + 24f;   // clear the chart's indicator-title line
-            if (ShowRegimePanel && RegimePanelPosition == STVPPanelPosition.TopLeft)
-            {
-                float panelY = 10f;
-                y1 = ChartPanel.Y + panelY + GetRegimePanelHeight() + 6f;
-            }
-            float y2 = y1 + stripH + 2f;
-            float y3 = y2 + stripH + 2f;
-
-            float baseBuy  = regimeBuyerBrush.Opacity;
-            float baseSell = regimeSellerBrush.Opacity;
-
-            SharpDX.Direct2D1.SolidColorBrush discB = null, auctB = null, transB = null;
-            try
-            {
-                discB  = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.25f, 0.55f, 1.00f, 0.85f));
-                auctB  = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.70f, 0.45f, 0.95f, 0.85f));
-                transB = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.60f, 0.60f, 0.60f, 0.55f));
-
-                for (int bar = fromBar; bar <= toBar; bar++)
-                {
-                    float x    = chartControl.GetXByBarIndex(ChartBars, bar);
-                    float left = x - spacing * 0.5f;
-                    float w    = Math.Max(1f, spacing - 1f);
-
-                    STVPRegimeState st;
-                    if (regimeStateAtBar.TryGetValue(bar, out st))
-                    {
-                        SharpDX.Direct2D1.Brush rb = st == STVPRegimeState.Discovery ? (SharpDX.Direct2D1.Brush)discB
-                                                   : (st == STVPRegimeState.Auction ? auctB : transB);
-                        RenderTarget.FillRectangle(new SharpDX.RectangleF(left, y1, w, stripH), rb);
-                    }
-
-                    double dom;
-                    if (dominanceAtBar.TryGetValue(bar, out dom))
-                        DrawStripCell(left, y2, w, stripH, dom, 1.0f, baseBuy, baseSell);
-
-                    if (ShowDepthHistoryStrip)
-                    {
-                        double book;
-                        if (bookImbalanceAtBar.TryGetValue(bar, out book))
-                        {
-                            bool live = false;
-                            bookFromLiveL2.TryGetValue(bar, out live);
-                            DrawStripCell(left, y3, w, stripH, book, live ? 1.0f : 0.55f, baseBuy, baseSell);
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                regimeBuyerBrush.Opacity  = baseBuy;
-                regimeSellerBrush.Opacity = baseSell;
-                if (discB  != null) discB.Dispose();
-                if (auctB  != null) auctB.Dispose();
-                if (transB != null) transB.Dispose();
-            }
-
-            if (regimePanelFormat != null && regimePanelTextBrush != null)
-            {
-                RenderTarget.DrawText("MARKET  blue=Discovery  purple=Auction  grey=Transition", regimePanelFormat,
-                    new SharpDX.RectangleF(ChartPanel.X + 6f, y1 - 1f, 520f, 12f), regimePanelTextBrush);
-                RenderTarget.DrawText("IN CHARGE  green=Buyers  orange=Sellers", regimePanelFormat,
-                    new SharpDX.RectangleF(ChartPanel.X + 6f, y2 - 1f, 520f, 12f), regimePanelTextBrush);
-                if (ShowDepthHistoryStrip)
-                    RenderTarget.DrawText("DEPTH  green=bid-heavy  orange=ask-heavy  (dim = proxy)", regimePanelFormat,
-                        new SharpDX.RectangleF(ChartPanel.X + 6f, y3 - 1f, 520f, 12f), regimePanelTextBrush);
-            }
-        }
-
-        private void DrawStripCell(float x, float y, float w, float h, double value, float srcAlpha,
-                                   float baseBuy, float baseSell)
-        {
-            if (Math.Abs(value) < 0.005) return;
-            double mag = Math.Min(1.0, Math.Abs(value) / 0.5);   // 0.5 = full brightness
-            float a = (float)(0.35 + 0.65 * mag) * srcAlpha;
-            SharpDX.Direct2D1.Brush b = value > 0 ? regimeBuyerBrush : regimeSellerBrush;
-            b.Opacity = (value > 0 ? baseBuy : baseSell) * a;
-            RenderTarget.FillRectangle(new SharpDX.RectangleF(x, y, w, h), b);
-        }
-
-        /// <summary>
-        /// Renders historical regime background segments across visible bars
-        /// plus the live status panel. When you scroll to a previous session
-        /// you see the Discovery / Auction timeline and can read who was in charge.
-        /// </summary>
-        private void RenderRegimeOverlay(ChartControl chartControl, ChartScale chartScale)
-        {
-            if (!EnableRegimeDetection) return;
-            if (ChartPanel == null || ChartBars == null) return;
-
-            // ── Historical background segments ──────────────────────────────────
-            // Paint contiguous runs of the same regime state as vertical bands
-            // so the full timeline is visible when scrolling past sessions.
-            if (ShowRegimeBackground && regimeStateAtBar != null && regimeStateAtBar.Count > 0)
-            {
-                int fromBar = ChartBars.FromIndex;
-                int toBar   = ChartBars.ToIndex;
-                if (fromBar < 0) fromBar = 0;
-                if (toBar >= ChartBars.Count) toBar = ChartBars.Count - 1;
-
-                int runStart = -1;
-                STVPRegimeState runState = STVPRegimeState.Transition;
-
-                for (int bar = fromBar; bar <= toBar + 1; bar++)
-                {
-                    STVPRegimeState state = STVPRegimeState.Transition;
-                    bool has = (bar <= toBar) && regimeStateAtBar.TryGetValue(bar, out state);
-
-                    if (!has || bar == toBar + 1 || state != runState)
-                    {
-                        // close previous run
-                        if (runStart >= 0 && runStart <= toBar)
-                        {
-                            int runEnd = Math.Min(bar - 1, toBar);
-                            if (runEnd >= runStart)
-                            {
-                                float x1 = chartControl.GetXByBarIndex(ChartBars, runStart);
-                                float x2 = chartControl.GetXByBarIndex(ChartBars, runEnd);
-                                // extend half a bar width on each side for continuous look
-                                float half = (x2 - x1) / Math.Max(1, runEnd - runStart) * 0.5f;
-                                if (runEnd == runStart) half = 4f;
-                                float left  = x1 - half;
-                                float right = x2 + half;
-                                if (right > left)
-                                {
-                                    SharpDX.Direct2D1.Brush bg = null;
-                                    switch (runState)
-                                    {
-                                        case STVPRegimeState.Discovery:  bg = regimeDiscoveryBgBrush;  break;
-                                        case STVPRegimeState.Auction:    bg = regimeAuctionBgBrush;    break;
-                                        default:                         bg = regimeTransitionBgBrush; break;
-                                    }
-                                    if (bg != null)
-                                    {
-                                        var rect = new SharpDX.RectangleF(
-                                            left, ChartPanel.Y,
-                                            right - left, ChartPanel.H);
-                                        RenderTarget.FillRectangle(rect, bg);
-                                    }
-                                }
-                            }
-                        }
-
-                        if (bar > toBar) break;
-                        if (has)
-                        {
-                            runStart = bar;
-                            runState = state;
-                        }
-                        else
-                        {
-                            runStart = -1;
-                        }
-                    }
-                }
-            }
-
-            // ── Historical dominance + depth strips ─────────────────────────────
-            if (ShowRegimeHistoryStrips)
-                RenderRegimeHistoryStrips(chartControl);
-
-            // ── Status panel (live / current values) ────────────────────────────
-            if (!ShowRegimePanel || regimePanelFormat == null || regimePanelTextBrush == null)
-                return;
-
-            // ── Plain-English status panel ──────────────────────────────────────
-            bool showDetail = ShowRegimeDetailLine;
-            float panelW = 300f;
-            float panelH = GetRegimePanelHeight();
-            float panelX = RegimePanelPosition == STVPPanelPosition.TopRight
-                ? RenderTarget.Size.Width - panelW - 10f
-                : 10f;
-            float panelY = 10f;
-
-            if (regimePanelBgBrush != null)
-                RenderTarget.FillRectangle(
-                    new SharpDX.RectangleF(panelX, panelY, panelW, panelH), regimePanelBgBrush);
-
-            string marketStr;
-            switch (regimeState)
-            {
-                case STVPRegimeState.Discovery:
-                    marketStr = "MARKET: PRICE DISCOVERY (one-sided move)"; break;
-                case STVPRegimeState.Auction:
-                    marketStr = "MARKET: AUCTION (two-sided, balanced)"; break;
-                default:
-                    marketStr = "MARKET: TRANSITION (between the two)"; break;
-            }
-
-            double ad = Math.Abs(dominance);
-            string strength = ad >= 0.50 ? "strong" : (ad >= 0.25 ? "clear" : "slight");
-            string controlStr;
-            SharpDX.Direct2D1.Brush domBrush = regimePanelTextBrush;
-            if (dominance >= 0.08)
-            {
-                controlStr = "IN CHARGE: BUYERS (" + strength + ")";
-                domBrush = regimeBuyerBrush ?? regimePanelTextBrush;
-            }
-            else if (dominance <= -0.08)
-            {
-                controlStr = "IN CHARGE: SELLERS (" + strength + ")";
-                domBrush = regimeSellerBrush ?? regimePanelTextBrush;
-            }
-            else
-            {
-                controlStr = "IN CHARGE: NEITHER (even)";
-            }
-
-            RenderTarget.DrawText(marketStr, regimePanelFormat,
-                new SharpDX.RectangleF(panelX + 6f, panelY + 4f, panelW - 12f, 16f), regimePanelTextBrush);
-            RenderTarget.DrawText(controlStr, regimePanelFormat,
-                new SharpDX.RectangleF(panelX + 6f, panelY + 21f, panelW - 12f, 16f), domBrush);
-
-            float lineY = panelY + 38f;
-            if (false)
-            {
-                int nSig = 0, nBuy = 0;
-                DateTime curKey = currentSession != null ? currentSession.SessionDate : DateTime.MinValue;
-                lock (signalLock)
-                {
-                    for (int i = 0; i < signals.Count; i++)
-                        if (signals[i].SessionKey == curKey) { nSig++; if (signals[i].Dir > 0) nBuy++; }
-                }
-                string sigLine = nSig > 0
-                    ? "SIGNALS: " + nSig + " this session (" + nBuy + " buy / " + (nSig - nBuy) + " sell)"
-                    : "SIGNALS: none yet (" + diagRaw + " setups seen)";
-                RenderTarget.DrawText(sigLine, regimePanelFormat,
-                    new SharpDX.RectangleF(panelX + 6f, lineY, panelW - 12f, 16f), regimePanelTextBrush);
-                lineY += 17f;
-            }
-
-            if (showDetail)
-            {
-                string detail = string.Format("detail: score {0:+0.00;-0.00}  control {1:+0.00;-0.00}",
-                    regimeScore, dominance);
-                RenderTarget.DrawText(detail, regimePanelFormat,
-                    new SharpDX.RectangleF(panelX + 6f, lineY, panelW - 12f, 14f), regimePanelTextBrush);
-                string skip = "skipped: ctrl " + diagCtrl + " day " + diagDay + " stop " + diagRisk
-                            + " confirm " + diagConf + " target " + diagNoTP;
-                RenderTarget.DrawText(skip, regimePanelFormat,
-                    new SharpDX.RectangleF(panelX + 6f, lineY + 14f, panelW - 12f, 14f), regimePanelTextBrush);
-            }
-        }
 
         #endregion
 
@@ -9961,7 +8896,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// </summary>
         private void CheckInChargeClearStrongFlip(int barIdx, double dom)
         {
-            if (!EnableRegimeDetection) return;
+
 
             bool persist = 0 > 0 && State == State.Realtime;
 
@@ -10106,42 +9041,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (now > 0) lastICFireBuy = DateTime.Now; else lastICFireSell = DateTime.Now;
             }
-            IcLogImmediateFire(barIdx, now, dom);
             EmitInChargeFlip(barIdx, now, canAlert: true);
-        }
-
-        /// <summary>
-        /// Historical path: scan stored dominance in bar order for the same transitions.
-        /// </summary>
-        private void ScanInChargeFlipsFromHistory()
-        {
-            if (!EnableRegimeDetection || dominanceAtBar == null || dominanceAtBar.Count == 0)
-                return;
-
-            var bars = new List<int>(dominanceAtBar.Keys);
-            bars.Sort();
-            int prev = 0;
-            foreach (int bar in bars)
-            {
-                double dom;
-                if (!dominanceAtBar.TryGetValue(bar, out dom)) continue;
-                int now = ResolveClearStrongSide(dom, prev);
-                if (now == 0)
-                {
-                    prev = 0;
-                    continue;
-                }
-                if (now != prev)
-                    EmitInChargeFlip(bar, now, canAlert: false);
-                prev = now;
-            }
-            // Do not freeze live detection to the last historical side.
-            // After a realtime rebuild, sync from *current* dominance so the next
-            // true transition (e.g. neutral → sellers clear) can still fire.
-            if (State == State.Realtime)
-                lastClearStrongSide = ResolveClearStrongSide(dominance, 0);
-            else
-                lastClearStrongSide = prev;
         }
 
         /// <summary>
@@ -10151,7 +9051,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void EmitInChargeFlip(int barIdx, int side, bool canAlert)
         {
             // IC trade/chart signals removed — MR + VA rejection only.
-            // Regime/control logging still available via IcLogImmediateFire.
             return;
         }
 
@@ -12041,7 +10940,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CheckNodeRoom(dir, fadeFit, entry, risk))              { volN++; v.Append('v'); }
 
             // Live-only: the real Level-2 book agrees right now (cannot exist on history)
-            l2ok = State == State.Realtime && UseLevel2Book && x.idx >= CurrentBars[0] - 1
+            l2ok = State == State.Realtime && x.idx >= CurrentBars[0] - 1
                    && l2LastUpdateTime != DateTime.MinValue
                    && (GetMarketNow() - l2LastUpdateTime).TotalSeconds < 5.0
                    && l2BookImbalance * dir >= 0.10;
@@ -12898,20 +11797,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 analyticsPanelBgBrush = new SharpDX.Direct2D1.SolidColorBrush(
                     RenderTarget, new SharpDX.Color4(0f, 0f, 0f, 0.55f));
 
-                // ── Regime & Dominance brushes ──
-                regimeDiscoveryBgBrush  = DxBrush(DiscoveryBgColor);
-                regimeAuctionBgBrush    = DxBrush(AuctionBgColor);
-                regimeTransitionBgBrush = DxBrush(TransitionBgColor);
-                regimeBuyerBrush        = DxBrush(BuyerDominanceColor);
-                regimeSellerBrush       = DxBrush(SellerDominanceColor);
-                regimePanelBgBrush = new SharpDX.Direct2D1.SolidColorBrush(
-                    RenderTarget, new SharpDX.Color4(0f, 0f, 0f, 0.60f));
-                regimePanelTextBrush    = DxBrush(TextColor);
-                regimePanelFormat = new SharpDX.DirectWrite.TextFormat(
-                    NinjaTrader.Core.Globals.DirectWriteFactory, "Consolas", 11);
-                regimePanelFormat.TextAlignment = TextAlignment.Leading;
-                regimePanelFormat.WordWrapping  = WordWrapping.NoWrap;
-
                 // L2 wall / in-trade monitor brushes
                 wallSeenBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.65f, 0.65f, 0.70f, 0.85f));
                 wallBidBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new SharpDX.Color4(0.25f, 0.75f, 0.45f, 0.80f));
@@ -13077,16 +11962,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Analytics panel
             if (analyticsPanelBgBrush   != null) { analyticsPanelBgBrush.Dispose();   analyticsPanelBgBrush   = null; }
-
-            // Regime & Dominance
-            if (regimeDiscoveryBgBrush  != null) { regimeDiscoveryBgBrush.Dispose();  regimeDiscoveryBgBrush  = null; }
-            if (regimeAuctionBgBrush    != null) { regimeAuctionBgBrush.Dispose();    regimeAuctionBgBrush    = null; }
-            if (regimeTransitionBgBrush != null) { regimeTransitionBgBrush.Dispose(); regimeTransitionBgBrush = null; }
-            if (regimeBuyerBrush        != null) { regimeBuyerBrush.Dispose();        regimeBuyerBrush        = null; }
-            if (regimeSellerBrush       != null) { regimeSellerBrush.Dispose();       regimeSellerBrush       = null; }
-            if (regimePanelBgBrush      != null) { regimePanelBgBrush.Dispose();      regimePanelBgBrush      = null; }
-            if (regimePanelTextBrush    != null) { regimePanelTextBrush.Dispose();    regimePanelTextBrush    = null; }
-            if (regimePanelFormat       != null) { regimePanelFormat.Dispose();       regimePanelFormat       = null; }
 
             if (wallSeenBrush != null) { wallSeenBrush.Dispose(); wallSeenBrush = null; }
             if (wallBidBrush != null) { wallBidBrush.Dispose(); wallBidBrush = null; }
