@@ -178,39 +178,61 @@ namespace NinjaTrader.NinjaScript.Indicators
             string fmt = "F" + PriceDecimals(ymTick).ToString();
 
             int lastBar = ChartBars.Count - 1;
+            int drawN = 0, skipUnknown = 0, skipSpan = 0, skipOld = 0, off = 0;
+            string offSample = "";
+            double scaleHi = double.MinValue, scaleLo = double.MaxValue;
             for (int i = 0; i < src.Count; i++)
             {
                 SessionTPOVolumeProfile.STVPLevelRecord rec = src[i];
                 if (rec == null) continue;
-                if (!ShowBrokenLevels && rec.BreakTime != DateTime.MinValue) continue;
+                if (!ShowBrokenLevels && rec.BreakTime != DateTime.MinValue) { skipOld++; continue; }
 
                 double ymPrice = Math.Round(rec.Price * ratio / ymTick) * ymTick;
 
                 int startIdx = Bars.GetBar(rec.SessionEnd);
                 int endIdx   = rec.BreakTime != DateTime.MinValue ? Bars.GetBar(rec.BreakTime) : lastBar;
-                if (startIdx < 0) continue;
+                if (startIdx < 0) { skipUnknown++; continue; }
                 if (endIdx > lastBar) endIdx = lastBar;
                 int endDrawIdx = Math.Max(endIdx, Math.Min(lastBar, startIdx + 10));
-                if (endDrawIdx <= startIdx) continue;
+                if (endDrawIdx <= startIdx) { skipSpan++; continue; }
 
                 SharpDX.Direct2D1.Brush brush = BrushFor(rec.Type);
-                if (brush == null) continue;
+                if (brush == null) { skipUnknown++; continue; }
 
                 float y = chartScale.GetYByValue(ymPrice);
                 float xStart = chartControl.GetXByBarIndex(ChartBars, startIdx);
                 float xEnd   = chartControl.GetXByBarIndex(ChartBars, endDrawIdx);
 
-                RenderTarget.DrawLine(new SharpDX.Vector2(xStart, y),
-                                      new SharpDX.Vector2(xEnd, y),
-                                      brush, Math.Max(1, LineWidth), dashStroke);
-
-                SharpDX.Direct2D1.Brush textB = textBrush != null ? textBrush : brush;
-                if (ShowLabels)
+                if (y >= 0 && y <= RenderTarget.Size.Height)
                 {
-                    string tag = rec.Type + " " + ymPrice.ToString(fmt);
-                    RenderTarget.DrawText(tag, labelFormat,
-                        new SharpDX.RectangleF(xEnd + 6, y - labelFormat.FontSize - 2, 140, labelFormat.FontSize + 4), textB);
+                    RenderTarget.DrawLine(new SharpDX.Vector2(xStart, y),
+                                          new SharpDX.Vector2(xEnd, y),
+                                          brush, Math.Max(1, LineWidth), dashStroke);
+                    drawN++;
+
+                    if (ShowLabels)
+                    {
+                        string tag = rec.Type + " " + ymPrice.ToString(fmt) + " (" + rec.Price.ToString("F2") + ")";
+                        SharpDX.Direct2D1.Brush textB = textBrush != null ? textBrush : brush;
+                        RenderTarget.DrawText(tag, labelFormat,
+                            new SharpDX.RectangleF(xEnd + 6, y - labelFormat.FontSize - 2, 190, labelFormat.FontSize + 4), textB);
+                    }
+                    if (ShowRoleTags && rec.RoleText != null)
+                    {
+                        SharpDX.Direct2D1.Brush roleB = RoleBrushFor(rec.RoleText);
+                        RenderTarget.DrawText(rec.RoleText, labelFormat,
+                            new SharpDX.RectangleF(xEnd + 6, y + 2, 190, labelFormat.FontSize + 4), roleB);
+                    }
                 }
+                else
+                {
+                    off++;
+                    if (off <= 8)
+                        offSample += " " + rec.Type + " es=" + rec.Price.ToString("F2") + " ym=" + ymPrice.ToString("F0") + (y < 0 ? " ABOVE" : " BELOW");
+                }
+
+                if (ymPrice > scaleHi) scaleHi = ymPrice;
+                if (ymPrice < scaleLo) scaleLo = ymPrice;
                 if (ShowRoleTags && rec.RoleText != null)
                 {
                     SharpDX.Direct2D1.Brush roleB = RoleBrushFor(rec.RoleText);
