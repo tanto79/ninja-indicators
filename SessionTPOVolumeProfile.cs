@@ -424,6 +424,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush tpoVAHBrush;       // TPO VAH line
         private SharpDX.Direct2D1.Brush tpoVALBrush;       // TPO VAL line
         private SharpDX.Direct2D1.Brush nakedTPOPocBrush;  // naked TPO POC extension
+        private SharpDX.Direct2D1.Brush priorTPOPocBrush;  // prior session TPO POC extension
         private SharpDX.Direct2D1.Brush nakedTPOVABrush;   // naked TPO VAH/VAL extension
         private SharpDX.Direct2D1.Brush priorTPOVABrush;   // prior session TPO VAH/VAL extension
         private SharpDX.Direct2D1.Brush tpoSD2Brush;       // TPO SD2H/SD2L lines
@@ -1327,6 +1328,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string PriorSessionTPOVAColorSerialize
         { get { return Serialize.BrushToString(PriorSessionTPOVAColor); } set { PriorSessionTPOVAColor = Serialize.StringToBrush(value); } }
 
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Prior Session TPO POC Color", Order = 14, GroupName = "8. TPO Colors")]
+        public System.Windows.Media.Brush PriorSessionTPOPOCColor { get; set; }
+        [Browsable(false)]
+        public string PriorSessionTPOPOCColorSerialize
+        { get { return Serialize.BrushToString(PriorSessionTPOPOCColor); } set { PriorSessionTPOPOCColor = Serialize.StringToBrush(value); } }
+
         #endregion
 
 
@@ -1529,6 +1538,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     System.Windows.Media.Color.FromArgb(255, 30, 144, 255));
                 priorTPOVA.Freeze();
                 PriorSessionTPOVAColor = priorTPOVA;
+
+                var priorTPOPoc = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromArgb(255, 255, 0, 255));
+                priorTPOPoc.Freeze();
+                PriorSessionTPOPOCColor = priorTPOPoc;
 
             }
             else if (State == State.Configure)
@@ -3202,8 +3216,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (tpocOn && session.POCLevel > 0)
             {
                 double p = session.POCLevel * rowSize + (rowSize * 0.5);
+                SharpDX.Direct2D1.Brush tpocBrush = session == mostRecentCompletedSession
+                    ? priorTPOPocBrush : nakedTPOPocBrush;
                 RenderExtensionLine(chartScale, endX, p,
-                    session.TPOPOCBreakTime, nakedTPOPocBrush, pfx + rPfx + "POC " + p.ToString("F2"), ShowLevelZones);
+                    session.TPOPOCBreakTime, tpocBrush, pfx + rPfx + "POC " + p.ToString("F2"), ShowLevelZones);
                 DrawLevelRoleTag(chartScale, endX, RoleKey(session, "TPOPOC"), p, session.TPOPOCBreakTime);
             }
             if ((session == mostRecentCompletedSession) ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
@@ -4944,6 +4960,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 tpoVAHBrush      = DxBrush(TPOVAHColor);
                 tpoVALBrush      = DxBrush(TPOVALColor);
                 nakedTPOPocBrush = DxBrush(NakedTPOPOCColor);
+                priorTPOPocBrush = DxBrush(PriorSessionTPOPOCColor);
                 nakedTPOVABrush  = DxBrush(NakedTPOVAColor);
                 priorTPOVABrush  = DxBrush(PriorSessionTPOVAColor);
                 tpoSD2Brush      = DxBrush(TPOSDTwoColor);
@@ -5083,6 +5100,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (tpoVAHBrush      != null) { tpoVAHBrush.Dispose();      tpoVAHBrush      = null; }
             if (tpoVALBrush      != null) { tpoVALBrush.Dispose();      tpoVALBrush      = null; }
             if (nakedTPOPocBrush != null) { nakedTPOPocBrush.Dispose(); nakedTPOPocBrush = null; }
+            if (priorTPOPocBrush != null) { priorTPOPocBrush.Dispose(); priorTPOPocBrush = null; }
             if (nakedTPOVABrush  != null) { nakedTPOVABrush.Dispose();  nakedTPOVABrush  = null; }
             if (priorTPOVABrush  != null) { priorTPOVABrush.Dispose();  priorTPOVABrush  = null; }
             if (tpoSD2Brush      != null) { tpoSD2Brush.Dispose();      tpoSD2Brush      = null; }
