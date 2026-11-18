@@ -122,7 +122,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     + "  input=" + (Instrument != null ? Instrument.FullName : "null")
                     + "  Close[0]=" + Close[0].ToString("F2")
                     + "  esLast=" + pubLast.ToString("F2")
-                    + "  ratio=" + probeRatio.ToString("F4");
+                    + "  ratio=" + probeRatio.ToString("F4")
+                    + "  barsLast=" + Bars.GetClose(Bars.Count - 1).ToString("F2")
+                    + " barsLastTime=" + Bars.GetTime(Bars.Count - 1).ToString("HH:mm:ss");
                 if (probe != null && probe.Count > 0)
                 {
                     SessionTPOVolumeProfile.STVPLevelRecord r0 = probe[probe.Count - 1];
