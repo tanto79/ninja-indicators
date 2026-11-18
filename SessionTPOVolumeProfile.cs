@@ -345,6 +345,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SessionProfile roleTrackerMostRecent;
         private DateTime       roleTrackerCurrentStart = DateTime.MinValue;
         private bool           roleTrackerPriorHiLo;
+        private bool           roleTrackerRolesHiLo;
         private bool           roleTrackerPriorVPOC;
         private bool           roleTrackerNakedVPOC;
         private bool           roleTrackerNakedVA;
@@ -754,6 +755,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                  Description = "Live support/resistance classification beside each prior-session and naked High/Low/VPOC/VVAH/VVAL: untested, testing, held, breaking (acceptance timer) or flipped. Price side gives the role; tick interactions confirm it. Tick-driven and identical on any chart bar size.",
                  Order = 1, GroupName = "3B. Level Roles")]
         public bool ShowLevelRoles { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Classify Highs & Lows", 
+                 Description = "Run the live support/resistance classifier on prior-session and naked High/Low lines. The lines themselves follow Show Prior Session Levels; this only controls their role classification and tags.",
+                 Order = 7, GroupName = "3B. Level Roles")]
+        public bool LevelRolesHiLo { get; set; }
 
         [NinjaScriptProperty]
         [Range(5, 3600)]
@@ -1393,6 +1400,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LevelZoneTicksDown     = 8;
                 LevelZoneColor         = System.Windows.Media.Brushes.DodgerBlue;
                 ShowLevelRoles               = true;
+                LevelRolesHiLo               = true;
                 LevelRoleAcceptSeconds       = 180;  // price must hold ~3 minutes beyond a level before its role flips
                 LevelRoleTouchToleranceTicks = 8;
                 LevelRoleSupportColor        = System.Windows.Media.Brushes.LimeGreen;
@@ -2597,6 +2605,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 && roleTrackerMostRecent == mostRecentCompletedSession
                 && roleTrackerCurrentStart == currentSession.StartTime
                 && roleTrackerPriorHiLo == ShowPriorSessionLevels
+                && roleTrackerRolesHiLo == LevelRolesHiLo
                 && roleTrackerPriorVPOC == ShowPriorSessionVPOC
                 && roleTrackerNakedVPOC == ShowNakedVPOC
                 && roleTrackerNakedVA == ShowNakedVAHVAL
@@ -2629,7 +2638,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (s.VolumeAtPrice.Count == 0) continue;
                 bool isMostRecent = (s == mostRecentCompletedSession);
 
-                if (ShowPriorSessionLevels)
+                if (ShowPriorSessionLevels && LevelRolesHiLo)
                 {
                     if (s.HighLevel > 0)
                         AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh);
@@ -2663,6 +2672,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             roleTrackerMostRecent   = mostRecentCompletedSession;
             roleTrackerCurrentStart = currentSession.StartTime;
             roleTrackerPriorHiLo    = ShowPriorSessionLevels;
+            roleTrackerRolesHiLo    = LevelRolesHiLo;
             roleTrackerPriorVPOC    = ShowPriorSessionVPOC;
             roleTrackerNakedVPOC    = ShowNakedVPOC;
             roleTrackerNakedVA      = ShowNakedVAHVAL;
