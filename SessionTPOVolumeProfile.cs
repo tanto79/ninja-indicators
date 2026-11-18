@@ -350,6 +350,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool           roleTrackerNakedVA;
         private bool           roleTrackerNakedTPOPoc;
         private bool           roleTrackerNakedTPOVA;
+        private bool           roleTrackerPriorTPOPoc;
+        private bool           roleTrackerPriorTPOVA;
         private SharpDX.Direct2D1.Brush nakedVpocBrush;
         private SharpDX.Direct2D1.Brush nakedVABrush;      // prior/naked VVAL
         private SharpDX.Direct2D1.Brush nakedVAHBrush;     // prior/naked VVAH
@@ -1162,6 +1164,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowNakedTPOVAHVAL { get; set; }
 
         [NinjaScriptProperty]
+        [Display(Name = "Show Prior Session TPO POC", Description = "Extend the previous session\u2019s TPO POC as a dashed line. Independent of Show Naked TPO POC, which controls the older untested TPO POCs.", Order = 10, GroupName = "7. TPO Settings")]
+        public bool ShowPriorSessionTPOPOC { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Prior Session TPO VAH/VAL", Description = "Extend the previous session\u2019s TPO VAH/VAL as dashed lines. Independent of Show Naked TPO VAH/VAL, which controls the older untested TPO VAH/VALs.", Order = 11, GroupName = "7. TPO Settings")]
+        public bool ShowPriorSessionTPOVAHVAL { get; set; }
+
+        [NinjaScriptProperty]
         [Display(Name = "Show Naked TPO SD2", Description = "Extend untested prior TPO SD2H/SD2L levels as dashed lines", Order = 8, GroupName = "7. TPO Settings")]
         public bool ShowNakedTPOSD2 { get; set; }
 
@@ -1479,6 +1489,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowTPOSD3           = true;
                 ShowNakedTPOPOC      = true;
                 ShowNakedTPOVAHVAL   = true;
+                ShowPriorSessionTPOPOC   = true;
+                ShowPriorSessionTPOVAHVAL = true;
                 ShowNakedTPOSD2      = true;
                 ShowNakedTPOSD3      = true;
                 ShowSinglePrints     = true;
@@ -1749,7 +1761,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // --- Naked level testing against prior sessions ---
             if (ShowNakedVPOC || ShowPriorSessionVPOC || ShowNakedVAHVAL || ShowPriorSessionLevels
-                || ShowNakedTPOPOC || ShowNakedTPOVAHVAL || ShowNakedTPOSD2 || ShowNakedTPOSD3 || ShowNakedSinglePrints)
+                || ShowNakedTPOPOC || ShowPriorSessionTPOPOC || ShowNakedTPOVAHVAL || ShowPriorSessionTPOVAHVAL
+                || ShowNakedTPOSD2 || ShowNakedTPOSD3 || ShowNakedSinglePrints)
                 CheckNakedLevelTests(tickPrice, tickTime);
 
             // --- Live support/resistance role tracking on prior-session and naked levels ---
@@ -1758,7 +1771,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // --- TPO letter construction ---
             if (ShowTPOLetters || ShowTPOPOC || ShowTPOVAHVAL || ShowTPOSD2 || ShowTPOSD3
-                || ShowNakedTPOPOC || ShowNakedTPOVAHVAL || ShowNakedTPOSD2 || ShowNakedTPOSD3
+                || ShowNakedTPOPOC || ShowPriorSessionTPOPOC || ShowNakedTPOVAHVAL || ShowPriorSessionTPOVAHVAL
+                || ShowNakedTPOSD2 || ShowNakedTPOSD3
                 || ShowSinglePrints || ShowNakedSinglePrints || ShowPoorHighsLows || ShowExcess
                 || SplitGlobexRthTPO)
             {
@@ -2559,7 +2573,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 && roleTrackerNakedVPOC == ShowNakedVPOC
                 && roleTrackerNakedVA == ShowNakedVAHVAL
                 && roleTrackerNakedTPOPoc == ShowNakedTPOPOC
-                && roleTrackerNakedTPOVA == ShowNakedTPOVAHVAL;
+                && roleTrackerNakedTPOVA == ShowNakedTPOVAHVAL
+                && roleTrackerPriorTPOPoc == ShowPriorSessionTPOPOC
+                && roleTrackerPriorTPOVA == ShowPriorSessionTPOVAHVAL;
 
             if (!cacheValid)
                 RebuildRoleTrackers();
@@ -2604,12 +2620,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                         AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize);
                 }
 
-                if (ShowNakedTPOPOC && s.POCLevel > 0)
+                if ((isMostRecent ? ShowPriorSessionTPOPOC : ShowNakedTPOPOC) && s.POCLevel > 0)
                     AddRoleTracker(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5);
-                if (ShowNakedTPOVAHVAL && s.TPOVAH > 0)
-                    AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize);
-                if (ShowNakedTPOVAHVAL && s.TPOVAL > 0)
-                    AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize);
+                if (isMostRecent ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
+                {
+                    if (s.TPOVAH > 0)
+                        AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize);
+                    if (s.TPOVAL > 0)
+                        AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize);
+                }
             }
 
             roleTrackerSessionCount = sessions.Count;
@@ -2621,6 +2640,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             roleTrackerNakedVA      = ShowNakedVAHVAL;
             roleTrackerNakedTPOPoc  = ShowNakedTPOPOC;
             roleTrackerNakedTPOVA   = ShowNakedTPOVAHVAL;
+            roleTrackerPriorTPOPoc  = ShowPriorSessionTPOPOC;
+            roleTrackerPriorTPOVA   = ShowPriorSessionTPOVAHVAL;
         }
 
         private void AddRoleTracker(string key, double level)
@@ -3157,14 +3178,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             // === TPO naked extensions ===
             // Always RTH levels only (when split, primary TPO fields are RTH; Globex is never extended).
             string rPfx = SplitGlobexRthTPO ? "r" : "";
-            if (ShowNakedTPOPOC && session.POCLevel > 0)
+            // Prior (most recent completed) session's TPO POC has its own toggle; older sessions use Naked TPO POC.
+            bool tpocOn = (session == mostRecentCompletedSession) ? ShowPriorSessionTPOPOC : ShowNakedTPOPOC;
+            if (tpocOn && session.POCLevel > 0)
             {
                 double p = session.POCLevel * rowSize + (rowSize * 0.5);
                 RenderExtensionLine(chartScale, endX, p,
                     session.TPOPOCBreakTime, nakedTPOPocBrush, pfx + rPfx + "POC " + p.ToString("F2"), ShowLevelZones);
                 DrawLevelRoleTag(chartScale, endX, RoleKey(session, "TPOPOC"), p);
             }
-            if (ShowNakedTPOVAHVAL)
+            if ((session == mostRecentCompletedSession) ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
             {
                 if (session.TPOVAH > 0)
                 {
