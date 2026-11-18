@@ -3068,13 +3068,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ShowPriorSessionLevels)
             {
                 if (session.HighLevel > 0)
+                {
                     RenderExtensionLine(chartScale, endX, session.SessionHigh,
                         session.HighBreakTime, priorHighLowBrush, pfx + "HI " + session.SessionHigh.ToString("F2"), ShowLevelZones);
                     DrawLevelRoleTag(chartScale, RoleKey(session, "HI"), session.SessionHigh, session.HighBreakTime);
+                }
                 if (session.LowLevel > 0)
+                {
                     RenderExtensionLine(chartScale, endX, session.SessionLow,
                         session.LowBreakTime, priorHighLowBrush, pfx + "LO " + session.SessionLow.ToString("F2"), ShowLevelZones);
                     DrawLevelRoleTag(chartScale, RoleKey(session, "LO"), session.SessionLow, session.LowBreakTime);
+                }
             }
 
             // === TPO naked extensions ===
