@@ -84,8 +84,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Two invisible plots carry the highest/lowest converted level so the YM
                 // panel's auto-scale expands enough to show every mirrored level.
-                AddPlot(System.Windows.Media.Brushes.Transparent, PlotStyle.Line);
-                AddPlot(System.Windows.Media.Brushes.Transparent, PlotStyle.Line);
+                AddPlot(new Stroke(System.Windows.Media.Brushes.Transparent, 1), PlotStyle.Line);
+                AddPlot(new Stroke(System.Windows.Media.Brushes.Transparent, 1), PlotStyle.Line);
 
                 SourceFilter                = "ES";
                 RatioMode                   = STVPYMRatioMode.AutoFit;
