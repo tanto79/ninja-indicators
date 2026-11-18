@@ -1647,6 +1647,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             double tickPrice  = Closes[1][0];
             long   tickVolume = (long)Volumes[1][0];
+            lastTickPrice     = tickPrice;
             if (tickVolume <= 0 || tickPrice <= 0) return;
 
             // Integer tick-index conversion — avoids FP Floor gaps on 0.025-tick markets (HE/LE)
@@ -2892,6 +2893,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             // Pass 2: prior-session extension lines (drawn on top of profiles)
+            ClearPublishedLevels();
             foreach (var session in sessions)
             {
                 if (session.StartBarIndex < 0) continue;
@@ -3135,6 +3137,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             int endX = ChartControl.GetXByBarIndex(ChartBars, Math.Min(ChartBars.Count - 1, session.EndBarIndex));
             // Extend from the session end bar position
+            renderedSessionStart = session.StartTime;
+            renderedSessionEnd   = session.EndTime;
             string pfx = (session == mostRecentCompletedSession) ? "p" : "n";
 
             // Naked VPOC
@@ -4584,6 +4588,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 new SharpDX.Vector2(endX, y),
                 brush, 2, dashStrokeStyle);
 
+            PublishLevelLine(label, price, breakTime);
+
             // Show label only when line reaches the right margin or was broken in current session
             bool brokenInCurrent = breakTime != DateTime.MinValue
                 && currentSession != null && breakTime >= currentSession.StartTime;
@@ -4817,6 +4823,72 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         #endregion
+
+        // ===== YMCross publisher (additive, read-only) =====
+        // Every extension line actually drawn by RenderSessionExtensions is published here so
+        // STVPYMCrossLevels (loaded on a YM chart) can mirror this chart's enabled levels.
+        // Nothing here changes how levels are calculated or drawn.
+        #region YMCrossPublisher
+
+        private static readonly object          ymPublishLock         = new object();
+        private static List<STVPLevelRecord>    ymPublishedLevels     = new List<STVPLevelRecord>();
+        private static string                   ymPublishedInstrument = "";
+        private static double                   ymPublishedLastPrice  = 0;
+        private static DateTime                 ymPublishedAt         = DateTime.MinValue;
+
+        private DateTime renderedSessionStart = DateTime.MinValue;
+        private DateTime renderedSessionEnd   = DateTime.MinValue;
+        private double   lastTickPrice        = 0;
+
+        /// <summary>Snapshot of every extension line currently drawn on this chart, plus the source instrument and last traded price.</summary>
+        public static List<STVPLevelRecord> GetPublishedLevels(string sourceFilter, int maxAgeSeconds, out double sourceLastPrice)
+        {
+            sourceLastPrice = 0;
+            lock (ymPublishLock)
+            {
+                if (!string.Equals(ymPublishedInstrument, sourceFilter ?? "", StringComparison.OrdinalIgnoreCase))
+                    return null;
+                if (maxAgeSeconds > 0 && (DateTime.UtcNow - ymPublishedAt).TotalSeconds > maxAgeSeconds)
+                    return null;
+                if (ymPublishedLevels.Count == 0)
+                    return null;
+                sourceLastPrice = ymPublishedLastPrice;
+                return new List<STVPLevelRecord>(ymPublishedLevels);
+            }
+        }
+
+        private void ClearPublishedLevels()
+        {
+            lock (ymPublishLock)
+            {
+                ymPublishedLevels     = new List<STVPLevelRecord>();
+                ymPublishedInstrument = Instrument != null ? Instrument.MasterInstrument.Name : "";
+                if (lastTickPrice > 0) ymPublishedLastPrice = lastTickPrice;
+            }
+        }
+
+        private void PublishLevelLine(string label, double price, DateTime breakTime)
+        {
+            if (price <= 0) return;
+            string type = label ?? "";
+            int sp = type.LastIndexOf(' ');
+            if (sp > 0) type = type.Substring(0, sp);
+            var rec = new STVPLevelRecord
+            {
+                Type         = type,
+                Price        = price,
+                SessionStart = renderedSessionStart,
+                SessionEnd   = renderedSessionEnd,
+                BreakTime    = breakTime
+            };
+            lock (ymPublishLock)
+            {
+                ymPublishedLevels.Add(rec);
+                ymPublishedInstrument = Instrument != null ? Instrument.MasterInstrument.Name : "";
+                if (lastTickPrice > 0) ymPublishedLastPrice = lastTickPrice;
+                ymPublishedAt = DateTime.UtcNow;
+            }
+        }
 
         private int LevelOf(double price)
         {
