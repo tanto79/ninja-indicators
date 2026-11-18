@@ -5452,6 +5452,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// NEVER fall back to wall-clock when a market time is available — mixing clocks
         /// breaks Wall Persist and stale cleanup under Market Replay (and fast playback).
         /// </summary>
+        /// <summary>Chart/tick time source (prefers the last tick, then bar time).</summary>
+        private DateTime GetChartNow()
+        {
+            if (lastTickTimeSeen != DateTime.MinValue) return lastTickTimeSeen;
+            try { if (Times != null && Times[0].Count > 0) return Times[0][0]; } catch { }
+            try { if (BarsArray != null && BarsArray[0] != null && CurrentBars[0] >= 0) return BarsArray[0].GetTime(CurrentBars[0]); } catch { }
+            return DateTime.MinValue;
+        }
+
         private DateTime GetMarketDepthTime(MarketDepthEventArgs e)
         {
             try
