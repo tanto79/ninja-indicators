@@ -132,7 +132,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                          + " es=" + r0.Price.ToString("F2")
                          + " ym=" + (r0.Price * probeRatio).ToString("F2")
                          + " bars " + bStart + ".." + bEnd
-                         + " of " + (ChartBars.Count - 1).ToString() + "]";
+                         + " of " + (ChartBars.Count - 1).ToString();
+                    if (chartScale != null)
+                    {
+                        float yPx  = chartScale.GetYByValue(r0.Price * probeRatio);
+                        float xSPx = chartControl.GetXByBarIndex(ChartBars, bStart);
+                        float xEPx = chartControl.GetXByBarIndex(ChartBars, Math.Min(bEnd, ChartBars.Count - 1));
+                        msg += " px[y=" + yPx.ToString("F0") + " xs=" + xSPx.ToString("F0") + " xe=" + xEPx.ToString("F0")
+                             + " canvas=" + RenderTarget.Size.Width.ToString("F0") + "x" + RenderTarget.Size.Height.ToString("F0") + "]";
+                    }
+                    msg += "]";
                 }
                 Print(msg);
             }
