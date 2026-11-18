@@ -110,7 +110,7 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///   - Configurable VbP width for current vs prior sessions
     ///   - Right-edge offset so it doesn't overlap other indicators
     ///
-    /// No HTTP export · No TPO letters · No exchange coloring · Self-contained.
+    /// Self-contained.
     /// </summary>
 
 
@@ -492,7 +492,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "RTH Start Time",
-                 Description = "Start of Regular Trading Hours (e.g. 8:30 AM). Ignored when RTH Mode = Full Session. Used for Initial Balance timing and RTH-specific bar tracking. Session boundaries are always read from the chart's trading hours template.",
+                 Description = "Start of Regular Trading Hours (e.g. 8:30 AM). Ignored when RTH Mode = Full Session. Used for RTH-specific bar tracking. Session boundaries are always read from the chart's trading hours template.",
                  Order = 1, GroupName = "1. RTH Settings")]
         public TimeSpan RTHStartTime { get; set; }
 
