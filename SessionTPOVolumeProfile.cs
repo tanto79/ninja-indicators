@@ -62,17 +62,6 @@ using SharpDX.DirectWrite;
 
 
 
-    /// <summary>Current auction regime derived purely from order-flow and structure.</summary>
-    public enum STVPRegimeState
-    {
-        /// <summary>Insufficient data or transitional.</summary>
-        Transition,
-        /// <summary>One-sided price discovery / imbalance in progress.</summary>
-        Discovery,
-        /// <summary>Two-sided auction behaviour (value forming, opposing participation present).</summary>
-        Auction
-    }
-
     /// <summary>Controls whether the volume/TPO profile resets each trading session or each week.</summary>
     public enum STVPProfilePeriod
     {
@@ -275,9 +264,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             public DateTime TPOSD3HBreakTime = DateTime.MinValue;
             public DateTime TPOSD3LBreakTime = DateTime.MinValue;
 
-            // Delta tracking — cumulative buy-minus-sell volume for the session
-            public long FinalDelta;
-
             // Per-price tick delta — buy vol and sell vol tracked separately at each level
             public Dictionary<int, long> BuyVolumeAtPrice;
             public Dictionary<int, long> SellVolumeAtPrice;
@@ -398,7 +384,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ================================================================
         // By-reference OrderFlow+ cumulative delta — BidAsk, Session period
         private OrderFlowCumulativeDelta cumulativeDeltaIndicator;
-        private Queue<long>              sessionFinalDeltaHistory = new Queue<long>();
         private int                      lastTickDirectionSign    = 0;  // 1 = uptick, -1 = downtick; carry-forward for equal-price ticks
 
         // Per primary-bar bid/ask totals (reset each new primary bar)
@@ -434,52 +419,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush tpoVABoxBrush;     // TPO value area box outline
         private SharpDX.DirectWrite.TextFormat letterFormat;  // Consolas font for TPO letters
 
-        // ================================================================
-        // Regime & Dominance fields (non-lagging order-flow + structure)
-        // ================================================================
-        private double          regimeScore      = 0.0;   // −1 (Auction) … +1 (Discovery)
-        private double          dominance        = 0.0;   // −1 (Sellers) … +1 (Buyers)
-        private STVPRegimeState regimeState      = STVPRegimeState.Transition;
-        private int             lastRegimeBar    = -1;
-        // In-charge Clear/Strong transition tracking (panel: clear >= 0.25, strong >= 0.50)
-        // Forming primary-bar OHLC built from ticks (live Control price direction needs the
-        // primary bar's range; Open[0]/High[0]/Low[0]/Close[0] on the 1-tick series are one price).
-        private int             fbBar = -1;
-        private double          fbOpen, fbHigh, fbLow, fbLast;
-        private DateTime        lastTickTimeSeen = DateTime.MinValue;  // chart-time of the latest tick (for RTH-open blackout)
-
         // Trading-hours-template session bounds for the latest tick (set in ProcessTick from GetSessionKey).
         private DateTime        templateDayBegin = DateTime.MinValue;
         private DateTime        templateDayEnd   = DateTime.MinValue;
         private DateTime        lastKeyBegin     = DateTime.MinValue;
         private DateTime        lastKeyEnd       = DateTime.MinValue;
         private Dictionary<DateTime, DateTime> tradingDayFirstBegin = new Dictionary<DateTime, DateTime>();
-
-        // Historical storage — one entry per primary bar index.
-        // Depth contribution stored per bar so historical plots include it.
-        // Live L2 values are stored when available; otherwise a tick-derived
-        // depth proxy is stored so every bar still has a depth signal.
-        private Dictionary<int, double>          bookImbalanceAtBar = new Dictionary<int, double>();
-        private Dictionary<int, double>          absorptionAtBar    = new Dictionary<int, double>();
-        private Dictionary<int, bool>            bookFromLiveL2     = new Dictionary<int, bool>();
-
-        // ── Level-2 book state (realtime only on most feeds) ───────────────────
-        private long     l2BestBidSize       = 0;
-        private long     l2BestAskSize       = 0;
-        private double   l2BestBidPrice      = 0;
-        private double   l2BestAskPrice      = 0;
-        private double   l2BookImbalance     = 0;   // −1 (ask heavy) … +1 (bid heavy)
-        private double   l2AbsorptionScore  = 0;   // 0…1  higher = aggressive flow being absorbed
-        private long     l2LastAggressiveVol = 0;
-        private int      l2LastAggressiveDir = 0;  // +1 buy aggressor, −1 sell aggressor
-        private DateTime l2LastUpdateTime    = DateTime.MinValue;
-        // Multi-level depth maps: position → size (position 0 = best)
-        private Dictionary<int, long> l2BidDepth = new Dictionary<int, long>();
-        private Dictionary<int, long> l2AskDepth = new Dictionary<int, long>();
-
-        // ================================================================
-        private DateTime                    lastDepthMarketTime = DateTime.MinValue;    // last OnMarketDepth market time
-
 
 
         #endregion
@@ -1314,7 +1259,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (State == State.SetDefaults)
             {
-                Description              = "Tick-accurate session-based Volume by Price with TPO Market Profile, plus non-lagging Discovery/Auction regime detection and aggressor dominance.";
+                Description              = "Tick-accurate session-based Volume by Price with TPO Market Profile.";
                 Name                     = "SessionTPOVolumeProfile";
                 Calculate                = Calculate.OnEachTick;
                 IsOverlay                = true;
@@ -1518,14 +1463,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sessionCumAskAtBar       = new Dictionary<int, long>();
                 sessionRunningBid        = 0;
                 sessionRunningAsk        = 0;
-                sessionFinalDeltaHistory = new Queue<long>();
-                lastRegimeBar            = -1;
-                bookImbalanceAtBar       = new Dictionary<int, double>();
-                absorptionAtBar          = new Dictionary<int, double>();
-                bookFromLiveL2           = new Dictionary<int, bool>();
-                l2BidDepth               = new Dictionary<int, long>();
-                l2AskDepth               = new Dictionary<int, long>();
-                lastDepthMarketTime      = DateTime.MinValue;
 
                 // SessionIterator reads session boundaries directly from the chart's
                 // trading hours template — no hardcoded ETH start time needed.
@@ -1572,90 +1509,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ProcessPrimaryBar();
         }
 
-        /// <summary>
-        /// Realtime Level-2 (market depth) handler.
-        /// Updates best bid/ask size and a short multi-level book imbalance.
-        /// Also feeds a simple absorption detector used by the regime engine.
-        /// Note: market depth is available live and in Market Replay when the recorded
-        /// data includes Level II. Historical chart load (no replay) does not fire this.
-        /// </summary>
-        protected override void OnMarketDepth(MarketDepthEventArgs e)
-        {
-            // Depth is required for the regime engine's L2 terms.
-            // No State filter: Market Replay runs as State.Realtime and must pass through.
-            if (e == null) return;
-
-            // Only track the top N levels the user requested (position-index path — regime)
-            if (e.Position >= 0 && e.Position < 3)
-            {
-                if (e.MarketDataType == MarketDataType.Bid)
-                {
-                    if (e.Operation == Operation.Remove || e.Volume <= 0)
-                        l2BidDepth.Remove(e.Position);
-                    else
-                        l2BidDepth[e.Position] = e.Volume;
-
-                    if (e.Position == 0)
-                    {
-                        l2BestBidSize  = e.Volume > 0 && e.Operation != Operation.Remove ? e.Volume : 0;
-                        l2BestBidPrice = e.Price;
-                    }
-                }
-                else if (e.MarketDataType == MarketDataType.Ask)
-                {
-                    if (e.Operation == Operation.Remove || e.Volume <= 0)
-                        l2AskDepth.Remove(e.Position);
-                    else
-                        l2AskDepth[e.Position] = e.Volume;
-
-                    if (e.Position == 0)
-                    {
-                        l2BestAskSize  = e.Volume > 0 && e.Operation != Operation.Remove ? e.Volume : 0;
-                        l2BestAskPrice = e.Price;
-                    }
-                }
-
-                // Recompute book imbalance across the configured depth
-                long bidSum = 0, askSum = 0;
-                for (int i = 0; i < 3; i++)
-                {
-                    long bs = 0, asz = 0;
-                    l2BidDepth.TryGetValue(i, out bs);
-                    l2AskDepth.TryGetValue(i, out asz);
-                    double w = 1.0 / (1.0 + i);
-                    bidSum += (long)(bs * w);
-                    askSum += (long)(asz * w);
-                }
-                long total = bidSum + askSum;
-                if (total > 0)
-                    l2BookImbalance = (double)(bidSum - askSum) / total;
-                else
-                    l2BookImbalance = 0;
-
-                // Simple absorption vs best (regime engine)
-                if (l2LastAggressiveVol > 0 && l2LastAggressiveDir != 0)
-                {
-                    long resting = l2LastAggressiveDir > 0 ? l2BestAskSize : l2BestBidSize;
-                    if (resting > 0 && l2LastAggressiveVol >= resting * 0.5)
-                    {
-                        double ratio = Math.Min(1.0, (double)l2LastAggressiveVol / Math.Max(1, resting));
-                        l2AbsorptionScore = Math.Min(1.0, 0.6 * ratio + 0.4 * l2AbsorptionScore);
-                    }
-                    else
-                        l2AbsorptionScore *= 0.85;
-                }
-            }
-
-            DateTime depthT = GetMarketDepthTime(e);
-            l2LastUpdateTime = depthT;
-            if (depthT.Year > 2000)
-                lastDepthMarketTime = depthT;
-        }
-
-        // ------------------------------------------------------------------
-        //  In-trade monitor (advisory only)
-        // ------------------------------------------------------------------
-
 
 
 
@@ -1667,7 +1520,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (CurrentBars[1] < 1) return;
 
             DateTime tickTime   = Times[1][0];
-            lastTickTimeSeen    = tickTime;
             DateTime sessionKey = GetSessionKey(tickTime);
             templateDayBegin    = lastKeyBegin;
             templateDayEnd      = lastKeyEnd;
@@ -1782,17 +1634,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             // --- Per primary-bar bid/ask totals (reset automatically on new bar index) ---
             // --- and session-cumulative snapshot at this primary bar ---
             int primaryBarIdx = GetPrimaryBarIndexForTick(tickTime);
-            if (primaryBarIdx != fbBar)
-            {
-                fbBar  = primaryBarIdx;
-                fbOpen = fbHigh = fbLow = tickPrice;
-            }
-            else
-            {
-                if (tickPrice > fbHigh) fbHigh = tickPrice;
-                if (tickPrice < fbLow)  fbLow  = tickPrice;
-            }
-            fbLast = tickPrice;
             if (primaryBarIdx >= 0)
             {
                 if (upVol > 0)
@@ -1814,24 +1655,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 sessionCumBidAtBar[primaryBarIdx] = sessionRunningBid;
                 sessionCumAskAtBar[primaryBarIdx] = sessionRunningAsk;
 
-                // REALTIME in-charge Clear/Strong: evaluate on every tick (mid-bar),
-                // not only when the primary bar closes.
-                UpdateRegimeAndDominanceRealtime(primaryBarIdx);
-
-            }
-
-            // Feed Level-2 absorption detector with this tick's aggressive volume
-            {
-                if (upVol > 0)
-                {
-                    l2LastAggressiveVol = upVol;
-                    l2LastAggressiveDir = 1;   // buy aggressor hitting the ask
-                }
-                else if (downVol > 0)
-                {
-                    l2LastAggressiveVol = downVol;
-                    l2LastAggressiveDir = -1;  // sell aggressor hitting the bid
-                }
             }
 
             // --- Session high / low ---
@@ -1913,8 +1736,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// Maps a tick to the primary bar it belongs to.
         /// Historically the tick series is processed BEFORE the primary bar that contains
         /// those ticks closes, so CurrentBars[0] still points at the previous bar. Without
-        /// this correction every historical bar's bid/ask volume (and therefore its
-        /// dominance and depth proxy) was filed one bar early and read as empty.
+        /// this correction every historical bar's bid/ask volume 
         /// In realtime CurrentBars[0] is already the forming bar.
         /// </summary>
         private int GetPrimaryBarIndexForTick(DateTime tickTime)
@@ -1963,13 +1785,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Recalculate TPO POC and value areas
                 CalculateTPOPOCandVA(currentSession);
 
-                // Keep FinalDelta current — DeltaClose[0] is the session-cumulative
-                // delta at the close of this primary bar (auto-resets each session).
-                if (cumulativeDeltaIndicator != null)
-                    currentSession.FinalDelta = (long)cumulativeDeltaIndicator.DeltaClose[0];
-
-                // Non-lagging regime + dominance update (order-flow + structure only)
-                UpdateRegimeAndDominance();
             }
 
             lastBarTime = barTime;
@@ -2078,14 +1893,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (end < currentSession.StartTime)
                     end = currentSession.StartTime;
                 currentSession.EndTime = end;
-                // FinalDelta was kept current each primary bar by ProcessPrimaryBar
-                CalculateVPOCandVA(currentSession);
-                CalculateTPOPOCandVA(currentSession);
-
-                // Push final delta to rolling history for Z-Score computation
-                sessionFinalDeltaHistory.Enqueue(currentSession.FinalDelta);
-                while (sessionFinalDeltaHistory.Count > 20)   // rolling Z-score lookback
-                    sessionFinalDeltaHistory.Dequeue();
 
                 priorSession = currentSession;
             }
@@ -4378,396 +4185,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         #endregion
         // =========================================================
 
-        // =========================================================
-        //  REGIME & DOMINANCE (non-lagging order-flow + structure)
-        // =========================================================
-
-        #region Regime & Dominance
-
         /// <summary>
-        /// Pure non-lagging regime engine.
-        /// Uses only:
-        ///   • aggressive bid/ask volume already accumulated per primary bar
-        ///   • session cumulative delta
-        ///   • developing TPO kurtosis / single-print presence
-        ///   • consecutive same-side directional control
-        /// No ATR, no SMA, no lagging volatility averages.
-        /// </summary>
-        /// <summary>
-        /// Tick-path regime/dominance update for the forming primary bar.
-        /// </summary>
-        private void UpdateRegimeAndDominanceRealtime(int primaryBarIdx)
-        {
-            if (currentSession == null) return;
-            if (primaryBarIdx < 10) return;
-            if (BarsArray == null || BarsArray[0] == null) return;
-            if (primaryBarIdx < 0 || primaryBarIdx >= BarsArray[0].Count) return;
-
-            UpdateRegimeAndDominance();
-
-        }
-
-        private void UpdateRegimeAndDominance()
-        {
-            if (CurrentBars[0] < 10) return;
-            if (currentSession == null) return;
-
-            int window = 8;
-            int barIdx = CurrentBars[0];
-
-            // ── 1. Aggressive imbalance intensity over the window ────────────────
-            long winAsk = 0;   // buy aggressor
-            long winBid = 0;   // sell aggressor
-            for (int i = 0; i < window; i++)
-            {
-                int b = barIdx - i;
-                if (b < 0) break;
-                long a = 0, s = 0;
-                primaryBarAskVol.TryGetValue(b, out a);
-                primaryBarBidVol.TryGetValue(b, out s);
-                winAsk += a;
-                winBid += s;
-            }
-            long winTotal = winAsk + winBid;
-            double intensity = 0.0;          // 0…1
-            double signedDom  = 0.0;         // −1…+1
-            if (winTotal > 0)
-            {
-                long net = winAsk - winBid;
-                intensity = Math.Abs((double)net) / winTotal;
-                signedDom = (double)net / winTotal;
-            }
-
-            // ── 2. Consecutive same-side directional control ─────────────────────
-            // Count how many of the last N bars closed in the same direction as the
-            // current dominant aggressor (or simply same close direction).
-            int sameDirCount = 0;
-            int refDir = 0;
-            if (Close[0] > Open[0]) refDir = 1;
-            else if (Close[0] < Open[0]) refDir = -1;
-
-            if (refDir != 0)
-            {
-                for (int i = 0; i < window; i++)
-                {
-                    if (Close[i] > Open[i] && refDir > 0) sameDirCount++;
-                    else if (Close[i] < Open[i] && refDir < 0) sameDirCount++;
-                    else break;   // streak broken
-                }
-            }
-            double streakScore = (double)sameDirCount / window;   // 0…1
-
-            // ── 3. Structure: open discovery vs forming value ────────────────────
-            // High TPO kurtosis → price clustered → balanced / auction character.
-            // Presence of single-print zones that remain untested → still discovery.
-            double kurt = ComputeTPOKurtosis(currentSession);
-            double kurtScore = 0.0;   // higher = more balanced
-            if (!double.IsNaN(kurt))
-            {
-                // Excess kurtosis > 1 → strongly leptokurtic (balanced)
-                // < −0.5 → platykurtic (trend / discovery)
-                kurtScore = Math.Max(-1.0, Math.Min(1.0, kurt / 2.0));
-            }
-
-            bool hasOpenSinglePrints = currentSession.SinglePrintZones != null
-                && currentSession.SinglePrintZones.Any(z => !z.IsFullyTested);
-
-            // ── 4. Composite OneSidedness (0…1) ─────────────────────────────────
-            // Intensity above floor is the primary driver; streak amplifies it;
-            // open single prints add a structural boost.
-            double oneSided = 0.0;
-            if (intensity >= 0.55)
-            {
-                oneSided = intensity;
-                oneSided = Math.Min(1.0, oneSided + 0.25 * streakScore);
-                if (hasOpenSinglePrints) oneSided = Math.Min(1.0, oneSided + 0.15);
-            }
-            else
-            {
-                // Even below the floor a strong streak still contributes modestly
-                oneSided = 0.35 * streakScore;
-            }
-
-            // ── 5. Depth signal (live L2 or tick-derived proxy) ───────────────────
-            // Goal: every bar — historical or live — contributes a depth component
-            // so historical regime bands are not missing market-depth influence.
-            //
-            // Priority:
-            //   1) Live L2 book (realtime only)
-            //   2) Tick-derived proxy from aggressive volume vs bar range
-            //      (works on pure historical data where native depth is unavailable)
-            double bookImb  = 0.0;
-            double absorp   = 0.0;
-            bool   fromLive = false;
-
-            bool l2Live = State == State.Realtime
-                && l2LastUpdateTime != DateTime.MinValue
-                && (GetMarketNow() - l2LastUpdateTime).TotalSeconds < 5.0;
-
-            if (l2Live)
-            {
-                bookImb  = l2BookImbalance;
-                absorp   = l2AbsorptionScore;
-                fromLive = true;
-            }
-            else
-            {
-                // Tick-derived depth proxy (historical + live when L2 not flowing)
-                // Book imbalance proxy: opposing aggressor residual.
-                // If buyers were aggressive but price did not expand up → resting offers absorbed them
-                // (ask-heavy book proxy). Symmetric for sellers.
-                double rangeTicks = 0;
-                if (High[0] > Low[0] && TickSize > 0)
-                    rangeTicks = (High[0] - Low[0]) / TickSize;
-
-                long barAsk = 0, barBid = 0;
-                primaryBarAskVol.TryGetValue(barIdx, out barAsk);
-                primaryBarBidVol.TryGetValue(barIdx, out barBid);
-                long barTot = barAsk + barBid;
-
-                if (barTot > 0 && rangeTicks >= 0)
-                {
-                    double askFrac = (double)barAsk / barTot;
-                    double bidFrac = (double)barBid / barTot;
-
-                    // High aggression + small range = absorption (resting size held)
-                    // High aggression + large range = initiative (book was thin / pulled)
-                    double aggressIntensity = Math.Abs(askFrac - bidFrac);
-                    double rangeNorm = Math.Min(1.0, rangeTicks / 20.0); // ~20 ticks as "wide" for NQ-ish
-
-                    // Absorption proxy: strong one-sided aggression that did NOT produce range
-                    absorp = aggressIntensity * (1.0 - rangeNorm);
-                    absorp = Math.Max(0.0, Math.Min(1.0, absorp));
-
-                    // Book imbalance proxy from residual:
-                    // If buyers aggressive but absorbed → book was ask-heavy (negative)
-                    // If sellers aggressive but absorbed → book was bid-heavy (positive)
-                    if (absorp > 0.10)
-                        bookImb = (bidFrac > askFrac) ? absorp : -absorp;
-                    else
-                        // No absorption: book leaned with the aggressors (thin on the passive side)
-                        bookImb = signedDom * (1.0 - aggressIntensity * 0.5);
-
-                    bookImb = Math.Max(-1.0, Math.Min(1.0, bookImb));
-                }
-            }
-
-            // ── 6. Balance score (0…1) ───────────────────────────────────────────
-            // Opposing participation (low intensity) + high kurtosis + no open singles
-            // + depth absorption (pulls toward Auction)
-            double balance = 0.0;
-            balance += (1.0 - intensity) * 0.55;
-            if (!double.IsNaN(kurt) && kurt > 0.5)
-                balance += Math.Min(0.35, kurt * 0.15);
-            if (!hasOpenSinglePrints && currentSession.TPOsAtPrice.Count > 8)
-                balance += 0.15;
-            if (absorp > 0.15)
-                balance += 0.40 * absorp;
-            balance = Math.Min(1.0, balance);
-
-            // ── 7. RegimeScore & state ───────────────────────────────────────────
-            regimeScore = oneSided - balance;          // −1 … +1
-            regimeScore = Math.Max(-1.0, Math.Min(1.0, regimeScore));
-
-            if (regimeScore >= 0.40)
-                regimeState = STVPRegimeState.Discovery;
-            else if (regimeScore <= -0.30)
-                regimeState = STVPRegimeState.Auction;
-            else
-                regimeState = STVPRegimeState.Transition;
-
-            // ── 8. Dominance (aggressor + depth book) ────────────────────────────
-            {
-                long cAsk = 0, cBid = 0;
-                primaryBarAskVol.TryGetValue(barIdx, out cAsk);
-                primaryBarBidVol.TryGetValue(barIdx, out cBid);
-                double bd, pd;
-                double cwd = ControlWindowDom(barIdx, signedDom);
-                // Tick-driven call: BarsInProgress == 1, so Open[0]/High[0]/Low[0]/Close[0] are one tick.
-                // Use the forming primary bar's OHLC built from ticks. Bar-close call (BIP 0) uses real bar values.
-                bool useFb = BarsInProgress == 1 && fbBar == barIdx;
-                double cO = useFb ? fbOpen : Open[0],  cH = useFb ? fbHigh : High[0];
-                double cL = useFb ? fbLow  : Low[0],   cC = useFb ? fbLast : Close[0];
-                dominance = ComputeControl(cAsk, cBid, cO, cH, cL, cC,
-                                           cwd, out bd, out pd);
-            }
-
-            lastRegimeBar = barIdx;
-
-            // Persist for historical rendering (regime + depth always stored)
-            bookImbalanceAtBar[barIdx] = bookImb;
-            absorptionAtBar[barIdx]    = absorp;
-            bookFromLiveL2[barIdx]     = fromLive;
-
-        }
-
-        /// <summary>Aggressor balance over the regime window ending at 'bar'.</summary>
-        private double ControlWindowDom(int bar, double regimeWindowDom)
-        {
-            return regimeWindowDom;
-        }
-
-        /// <summary>
-        /// Who is in charge, -1 (sellers) ... +1 (buyers). ONE formula used by live bars and
-        /// rebuilt history so they always agree. Inputs are order flow + price only (no depth):
-        ///   40%  this bar's own aggressor balance (buy aggressors minus sell aggressors)
-        ///   30%  this bar's price direction (where it closed inside its own range, open->close)
-        ///   30%  trailing-window aggressor balance (persistence over the last N bars)
-        /// </summary>
-        private double ComputeControl(long barAsk, long barBid,
-                                      double open, double high, double low, double close,
-                                      double windowDom, out double barDelta, out double priceDir)
-        {
-            long tot = barAsk + barBid;
-            barDelta = tot > 0 ? (double)(barAsk - barBid) / tot : 0.0;
-            double range = high - low;
-            priceDir = range > 0 ? (close - open) / range : 0.0;
-            double c = 0.40 * barDelta + 0.30 * priceDir + 0.30 * windowDom;
-            return Math.Max(-1.0, Math.Min(1.0, c));
-        }
-
-
-        #endregion
-
-        // =========================================================
-        //  CLUSTER ZONE DETECTION
-        // =========================================================
-
-        #region Cluster Zones
-
-
-
-        #endregion
-
-        // =========================================================
-        //  SESSION ANALYTICS HELPERS (Delta Z-Score / TPO Kurtosis)
-        //  (also feed the Regime & Trade-Signal engines)
-        // =========================================================
-
-        #region Session Analytics Helpers
-
-        /// <summary>
-        /// Computes excess kurtosis of the developing current session's TPO distribution.
-        /// Positive (leptokurtic) = price tightly clustered near POC → balanced day likely.
-        /// Negative (platykurtic) = price distributed widely → trend day developing.
-        /// </summary>
-        private double ComputeTPOKurtosis(SessionProfile session)
-        {
-            if (session == null || session.TPOsAtPrice.Count < 4) return double.NaN;
-
-            int totalTPOs = 0;
-            double weightedSum = 0;
-            foreach (var kvp in session.TPOsAtPrice)
-            {
-                int cnt = kvp.Value.Count;
-                totalTPOs    += cnt;
-                weightedSum  += (double)kvp.Key * cnt;
-            }
-            if (totalTPOs == 0) return double.NaN;
-
-            double mean = weightedSum / totalTPOs;
-
-            double variance = 0, kurtRaw = 0;
-            foreach (var kvp in session.TPOsAtPrice)
-            {
-                double d = kvp.Key - mean;
-                int    c = kvp.Value.Count;
-                variance += d * d * c;
-                kurtRaw  += d * d * d * d * c;
-            }
-            variance /= totalTPOs;
-            double std = Math.Sqrt(variance);
-            if (std < 1e-9) return 0;
-
-            double kurtosis = (kurtRaw / totalTPOs) / (std * std * std * std);
-            return kurtosis - 3.0;  // excess kurtosis (normal dist = 0)
-        }
-
-        #endregion
-
-        // =========================================================
-        //  TRADE SIGNALS
-        // =========================================================
-
-        // =========================================================
-        //  IN CHARGE Clear/Strong transitions
-        // =========================================================
-
-        /// <summary>
-        /// Market/session time for L2 walls.
-        /// Prefer the depth event's own time, then last depth time, then last tick / bar time.
-        /// NEVER fall back to wall-clock when a market time is available — mixing clocks
-        /// breaks Wall Persist and stale cleanup under Market Replay (and fast playback).
-        /// </summary>
-        /// <summary>Chart/tick time source (prefers the last tick, then bar time).</summary>
-        private DateTime GetChartNow()
-        {
-            if (lastTickTimeSeen != DateTime.MinValue) return lastTickTimeSeen;
-            try { if (Times != null && Times[0].Count > 0) return Times[0][0]; } catch { }
-            try { if (BarsArray != null && BarsArray[0] != null && CurrentBars[0] >= 0) return BarsArray[0].GetTime(CurrentBars[0]); } catch { }
-            return DateTime.MinValue;
-        }
-
-        private DateTime GetMarketDepthTime(MarketDepthEventArgs e)
-        {
-            try
-            {
-                if (e != null && e.Time.Year > 2000)
-                    return e.Time;
-            }
-            catch { }
-            if (lastDepthMarketTime.Year > 2000)
-                return lastDepthMarketTime;
-            DateTime chart = GetChartNow();
-            if (chart != DateTime.MinValue && chart.Year > 2000)
-                return chart;
-            // Last resort only (no depth/ticks yet)
-            return DateTime.Now;
-        }
-
-        /// <summary>
-        /// Best available market time for wall age / persist / freshness checks.
-        /// Uses the more recent of last depth vs last tick so sparse ticks do not
-        /// mark a live book "stale" and so depth alone still advances persist timers in replay.
-        /// </summary>
-        private DateTime GetMarketNow()
-        {
-            DateTime depth = lastDepthMarketTime;
-            DateTime tick  = lastTickTimeSeen;
-            if (depth.Year > 2000 && tick.Year > 2000)
-                return depth >= tick ? depth : tick;
-            if (depth.Year > 2000) return depth;
-            if (tick.Year > 2000) return tick;
-            try { if (Times != null && Times[0].Count > 0) return Times[0][0]; } catch { }
-            try
-            {
-                if (BarsArray != null && BarsArray[0] != null && CurrentBars[0] >= 0)
-                    return BarsArray[0].GetTime(CurrentBars[0]);
-            }
-            catch { }
-            return DateTime.Now;
-        }
-
-
-
-        /// <summary>
-        /// IC structure confluence:
-        /// Current session: TPO POC / VAH / VAL / SD2H / SD2L + VPOC + HVN/LVN.
-        /// Prior day (most recent completed): same TPO levels + VPOC (always).
-        /// Older sessions: same levels only while still naked (untested).
-        /// Volume VVAH/VVAL and SD3 are NOT used.
-        /// </summary>
-
-
-        /// <summary>
-        /// Primary entry: trade WITH an imbalance zone (acceptance), not against it.
-        /// Long: in/near buy zone or reclaim above sell zone high. Short: mirror.
-        /// </summary>
-
-        /// <summary>
-        /// Imbalance LEVELS = discrete prices with diagonal bid/ask imbalance
-        /// (same short red/green marks beside the profile — not Initial Balance, not zones).
-        /// dir &gt; 0 → next buy-imbalance level above price; dir &lt; 0 → next sell-imbalance below.
         /// </summary>
 
         /// <summary>
