@@ -41,15 +41,6 @@ using SharpDX.DirectWrite;
         BidAsk
     }
 
-    /// <summary>Which buy/sell totals the BidAsk footprint numbers use.</summary>
-    public enum STVPBuySellSource
-    {
-        /// <summary>Full session cumulative buy/sell at each price (default).</summary>
-        Session,
-        /// <summary>Only trades inside the sliding time window (matches GemsTraderLadder Buy/Sell Sliding Window columns).</summary>
-        SlidingWindow
-    }
-
     /// <summary>How aggressive buy vs sell is assigned on each trade.</summary>
     public enum STVPTradeClassification
     {
@@ -91,7 +82,7 @@ using SharpDX.DirectWrite;
         Weekly
     }
 
-    /// <summary>How "RTH" is defined for IB timing, RTH tracking, auto-trade start and the open blackout.</summary>
+    /// <summary>How "RTH" is defined for RTH tracking.</summary>
     public enum STVPRthMode
     {
         /// <summary>Default. Full Session when the chart's template session opens inside the RTH window (no overnight / pre-RTH part, e.g. HE, LE); otherwise Manual (e.g. ES / NQ with a Globex overnight session).</summary>
@@ -113,10 +104,9 @@ namespace NinjaTrader.NinjaScript.Indicators
     ///   - VPOC line (dashed, across session)
     ///   - Volume Value Area (VVAH / VVAL) – 70% of session volume
     ///   - Volume VA fill and outline box on the profile
-    ///   - Initial Balance (IBH / IBL) horizontal lines
     ///   - Naked VPOC / VVAH / VVAL extension lines into future sessions
     ///   - Prior session High / Low extension lines
-    ///   - Session stats mini-panel (date, range, IB range, VPOC, VA)
+    ///   - Session stats mini-panel (date, range, VPOC, VA)
     ///   - Configurable VbP width for current vs prior sessions
     ///   - Right-edge offset so it doesn't overlap other indicators
     ///
@@ -140,12 +130,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 PriceLevelsTouched = new HashSet<int>();
             }
-        }
-
-        private enum DayType
-        {
-            Unknown, Normal, NormalVariation, Trend,
-            DoubleDistribution, Neutral, PShape, BShape
         }
 
         private class SinglePrintZone
@@ -201,21 +185,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int    SD2L;         // 2σ Volume Value Area Low   (95 % of session volume)
             public int    SD3H;         // 3σ Volume Value Area High  (99.7 % of session volume)
             public int    SD3L;         // 3σ Volume Value Area Low   (99.7 % of session volume)
-
-            // Initial Balance (stored as level indices)
-            public int    IBHigh;
-            public int    IBLow;
-            public double IBHighPrice;   // exact IB high price (tick-rounded), 0 = not set
-            public double IBLowPrice;    // exact IB low price  (tick-rounded), 0 = not set
-            public bool   IBComplete;
-            public DateTime IBFirstTick = DateTime.MinValue;  // diagnostics: first / last tick folded into the IB
-            public DateTime IBLastTick  = DateTime.MinValue;
-            // Formation-order timestamps: when the current IB high / low extreme was last established.
-            // The earlier of the two is the "first-formed" side (IB-by-rejection bias).
-            public DateTime IBHighFormTime = DateTime.MinValue;
-            public DateTime IBLowFormTime  = DateTime.MinValue;
-            // Close price captured when IB window ends (for ending-zone / quartile bias).
-            public double   IBClosePrice  = 0;
 
             // Derived helpers
             public int    HighLevel;    // Highest touched level index
@@ -281,7 +250,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Single prints & structure analysis (TPO-based)
             public List<SinglePrintZone> SinglePrintZones;
-            public DayType Classification;
             public bool   HasPoorHigh;
             public bool   HasPoorLow;
             public bool   HasExcessHigh;
@@ -314,9 +282,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             public Dictionary<int, long> BuyVolumeAtPrice;
             public Dictionary<int, long> SellVolumeAtPrice;
 
-            // Naked single print testing
-            public int IBEndPeriodIndex;
-
             public SessionProfile()
             {
                 VolumeAtPrice     = new Dictionary<int, long>();
@@ -327,7 +292,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RthTPOsAtPrice    = new Dictionary<int, HashSet<char>>();
                 Periods           = new List<TPOPeriod>();
                 SinglePrintZones  = new List<SinglePrintZone>();
-                Classification    = DayType.Unknown;
                 SessionHigh       = double.MinValue;
                 SessionLow        = double.MaxValue;
                 RTHHigh           = double.MinValue;
@@ -336,7 +300,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EndBarIndex       = -1;
                 RTHStartBarIndex  = -1;
                 RTHEndBarIndex    = -1;
-                IBEndPeriodIndex  = -1;
             }
         }
 
@@ -385,11 +348,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush valueAreaFillBrush;
         private SharpDX.Direct2D1.Brush levelZoneFillBrush;      // level-zone fill (VP + TPO levels, all-or-nothing)
         private SharpDX.Direct2D1.Brush levelZoneBorderBrush;    // level-zone outline
-        private SharpDX.Direct2D1.Brush ibBrush;
-        private SharpDX.Direct2D1.Brush ibFirstBrush;       // first-formed IB extreme
-        private SharpDX.Direct2D1.Brush ibSecondHighBrush;  // IB High when it formed second
-        private SharpDX.Direct2D1.Brush ibSecondLowBrush;   // IB Low when it formed second
-        private SharpDX.Direct2D1.Brush ibQuartileBrush;    // 25/50/75% lines inside IB
         private SharpDX.Direct2D1.Brush nakedVpocBrush;
         private SharpDX.Direct2D1.Brush nakedVABrush;      // prior/naked VVAL
         private SharpDX.Direct2D1.Brush nakedVAHBrush;     // prior/naked VVAH
@@ -453,18 +411,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         private Dictionary<int, long>    sessionCumAskAtBar = new Dictionary<int, long>(); // buy  aggressor cumulative
         private long                     sessionRunningBid  = 0;
         private long                     sessionRunningAsk  = 0;
-
-        // ================================================================
-        // Sliding-window buy/sell (GemsTraderLadder-style)
-        // ================================================================
-        // Per-level last trade time + cumulative size inside the window.
-        // Same simplification as GemsOrderFlow: one entry per price level;
-        // the whole level is dropped when its last trade ages out of the window.
-        private Dictionary<int, long>     windowBuyAtPrice  = new Dictionary<int, long>();
-        private Dictionary<int, long>     windowSellAtPrice = new Dictionary<int, long>();
-        private Dictionary<int, DateTime> windowBuyTime     = new Dictionary<int, DateTime>();
-        private Dictionary<int, DateTime> windowSellTime    = new Dictionary<int, DateTime>();
-        private DateTime                  lastWindowCleanup = DateTime.MinValue;
 
         // ================================================================
         // TPO private fields
@@ -552,12 +498,12 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Display(Name = "RTH End Time",
-                 Description = "End of Regular Trading Hours (e.g. 4:00 PM). Used for IB and RTH bar index tracking.",
+                 Description = "End of Regular Trading Hours (e.g. 4:00 PM). Used for RTH bar index tracking.",
                  Order = 2, GroupName = "1. RTH Settings")]
         public TimeSpan RTHEndTime { get; set; }
 
         [Display(Name = "RTH Mode",
-                 Description = "Auto (default) = detects it per contract from the chart's trading hours template: if the session opens inside the RTH window below (no overnight part, e.g. HE / LE) the whole session is RTH, otherwise the RTH Start / End times are used (index futures with a Globex overnight session). Manual = always use RTH Start / End. Full Session = always treat the whole template session as RTH. When the whole session is RTH, Initial Balance, Auto-Trade Start After RTH and the RTH Open Blackout anchor on the template session open and nothing is classed as Globex.",
+                 Description = "Auto (default) = detects it per contract from the chart's trading hours template: if the session opens inside the RTH window below (no overnight part, e.g. HE / LE) the whole session is RTH, otherwise the RTH Start / End times are used (index futures with a Globex overnight session). Manual = always use RTH Start / End. Full Session = always treat the whole template session as RTH. When the whole session is RTH, nothing is classed as Globex.",
                  Order = 0, GroupName = "1. RTH Settings")]
         public STVPRthMode RthMode { get; set; }
 
@@ -574,11 +520,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(1, 30)]
         [Display(Name = "Ticks Per Row", Description = "Number of ticks that make up one price row in the profile", Order = 1, GroupName = "2. Volume Profile Settings")]
         public int TicksPerRow { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(15, 240)]
-        [Display(Name = "IB Duration (Minutes)", Description = "Initial Balance duration in minutes (typically 60)", Order = 2, GroupName = "2. Volume Profile Settings")]
-        public int IBDurationMinutes { get; set; }
 
         [NinjaScriptProperty]
         [Range(1, 100)]
@@ -602,18 +543,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         [NinjaScriptProperty]
         [Display(Name = "Show Volume Value Area", Description = "Draw the 70% volume value area fill and box outline", Order = 2, GroupName = "3. Display Options")]
         public bool ShowVolumeValueArea { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show Initial Balance", Description = "Draw IBH and IBL horizontal lines (colored by formation order). Lines appear as soon as each extreme exists — do not wait for the full IB window.", Order = 3, GroupName = "3. Display Options")]
-        public bool ShowInitialBalance { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show IB Quartile Levels", Description = "Draw 25% / 50% / 75% horizontal lines inside the IB range (used for the ending-zone bias filter).", Order = 31, GroupName = "3. Display Options")]
-        public bool ShowIBQuartiles { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Show IB Bias Label", Description = "After the IB completes, show a short bias label (LONG/SHORT/lean/FADE) based on formation order + ending zone.", Order = 32, GroupName = "3. Display Options")]
-        public bool ShowIBBiasLabel { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Show Naked VPOC", Description = "Extend untested prior VPOC levels as dashed lines into future sessions", Order = 4, GroupName = "3. Display Options")]
@@ -642,7 +571,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowPerBarBidAskTotals { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session Stats", Description = "Display a mini stats panel at the session low (date, range, IB, VPOC, VA)", Order = 8, GroupName = "3. Display Options")]
+        [Display(Name = "Show Session Stats", Description = "Display a mini stats panel at the session low (date, range, VPOC, VA)", Order = 8, GroupName = "3. Display Options")]
         public bool ShowSessionStats { get; set; }
 
         [NinjaScriptProperty]
@@ -730,32 +659,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                  Description = "BidAsk mode: show full-session cumulative Buy (right outer) and Sell (left outer) columns — same as GemsTraderLadder Session Buys/Sells.",
                  Order = 241, GroupName = "3. Display Options")]
         public bool ShowSessionBuysSells { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Buy/Sell Sliding Window",
-                 Description = "BidAsk mode: show sliding-window Buy/Sell columns (inner pair when Session is also on) — same as GemsTraderLadder Buy/Sell Sliding Window.",
-                 Order = 242, GroupName = "3. Display Options")]
-        public bool ShowSlidingWindowBuysSells { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(1, 3600)]
-        [Display(Name = "Buy/Sell Sliding Window (Seconds)",
-                 Description = "Time window in seconds for sliding-window buy/sell totals (same idea as GemsTraderLadder). Typical 60–240.",
-                 Order = 243, GroupName = "3. Display Options")]
-        public int TradeSlidingWindowSeconds { get; set; }
-
-        [NinjaScriptProperty]
-        [Display(Name = "Sliding Window Buy/Sell Totals",
-                 Description = "BidAsk mode: show the sliding-window aggregate Buy and Sell totals at the top and bottom of the sliding-window columns (winner highlighted), like the session totals above the session columns.",
-                 Order = 245, GroupName = "3. Display Options")]
-        public bool ShowSlidingWindowTotals { get; set; }
-
-        [NinjaScriptProperty]
-        [Range(0, 100)]
-        [Display(Name = "Sliding Window Totals Offset (Multiple)",
-                 Description = "Distance of the Buy/Sell totals from the active sliding-window range = Ticks Per Row x this multiple, above the top and below the bottom. Example: 4 ticks per row x 3 = 12 ticks. The totals follow the window as it moves.",
-                 Order = 246, GroupName = "3. Display Options")]
-        public int SlidingWindowTotalsOffsetMultiple { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Trade Classification",
@@ -938,46 +841,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Browsable(false)]
         public string ValueAreaFillColorSerialize
         { get { return Serialize.BrushToString(ValueAreaFillColor); } set { ValueAreaFillColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "IB Color (fallback)", Description = "Fallback color for IB lines when formation order is unknown. Also used for IB range text in the stats panel.", Order = 8, GroupName = "4. Colors")]
-        public System.Windows.Media.Brush IBColor { get; set; }
-        [Browsable(false)]
-        public string IBColorSerialize
-        { get { return Serialize.BrushToString(IBColor); } set { IBColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "IB First-Formed Side Color", Description = "Color for the IB extreme that printed first (default Orange). This is the side more likely to be rejected.", Order = 81, GroupName = "4. Colors")]
-        public System.Windows.Media.Brush IBFirstSideColor { get; set; }
-        [Browsable(false)]
-        public string IBFirstSideColorSerialize
-        { get { return Serialize.BrushToString(IBFirstSideColor); } set { IBFirstSideColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "IB Second Side = High Color", Description = "Color for IB High when it is the second extreme to form (default Green). High formed second → bullish bias.", Order = 82, GroupName = "4. Colors")]
-        public System.Windows.Media.Brush IBSecondHighColor { get; set; }
-        [Browsable(false)]
-        public string IBSecondHighColorSerialize
-        { get { return Serialize.BrushToString(IBSecondHighColor); } set { IBSecondHighColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "IB Second Side = Low Color", Description = "Color for IB Low when it is the second extreme to form (default Red). Low formed second → bearish bias.", Order = 83, GroupName = "4. Colors")]
-        public System.Windows.Media.Brush IBSecondLowColor { get; set; }
-        [Browsable(false)]
-        public string IBSecondLowColorSerialize
-        { get { return Serialize.BrushToString(IBSecondLowColor); } set { IBSecondLowColor = Serialize.StringToBrush(value); } }
-
-        [NinjaScriptProperty]
-        [XmlIgnore]
-        [Display(Name = "IB Quartile Line Color", Description = "Color for the 25% / 50% / 75% lines drawn inside the IB range.", Order = 84, GroupName = "4. Colors")]
-        public System.Windows.Media.Brush IBQuartileColor { get; set; }
-        [Browsable(false)]
-        public string IBQuartileColorSerialize
-        { get { return Serialize.BrushToString(IBQuartileColor); } set { IBQuartileColor = Serialize.StringToBrush(value); } }
 
         [NinjaScriptProperty]
         [XmlIgnore]
@@ -1320,10 +1183,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         public bool ShowExcess { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Day Type", Description = "Display day type classification (Normal, Trend, Neutral, etc.) in session stats", Order = 13, GroupName = "7. TPO Settings")]
-        public bool ShowDayType { get; set; }
-
-        [NinjaScriptProperty]
         [Range(6, 14)]
         [Display(Name = "TPO Letter Font Size", Description = "Font size for TPO letters rendered in the session", Order = 14, GroupName = "7. TPO Settings")]
         public int TPOFontSize { get; set; }
@@ -1472,15 +1331,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Profile settings
                 ProfilePeriod         = STVPProfilePeriod.Session;
                 TicksPerRow           = 1;   // 1 tick per row so buy/sell numbers match SuperDOM ladder price levels
-                IBDurationMinutes     = 60;
                 MaxSessionsToShow     = 20;
 
                 // Display defaults
                 ShowVPOC               = true;
                 ShowVolumeValueArea    = true;
-                ShowInitialBalance     = true;
-                ShowIBQuartiles        = true;
-                ShowIBBiasLabel        = true;
                 ShowNakedVPOC          = true;
                 ShowPriorSessionVPOC   = true;
                 ShowNakedVAHVAL        = true;
@@ -1509,10 +1364,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 HvnLvnOnlyMode         = false;  // off by default — shows all node types (HVN + MVN + LVN)
                 VolumeBarDisplayMode   = STVPBarDisplayMode.Volume;  // default to standard volume bars
                 ShowSessionBuysSells   = true;
-                ShowSlidingWindowBuysSells = true;
-                TradeSlidingWindowSeconds = 60;
-                ShowSlidingWindowTotals = true;
-                SlidingWindowTotalsOffsetMultiple = 3;
                 TradeClassification    = STVPTradeClassification.Midpoint;  // same rule as GemsTraderLadder
                 LabelFontSize          = 9;
                 ExtensionLineWidth     = 2;
@@ -1534,11 +1385,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 vaFill.Freeze();
                 ValueAreaFillColor = vaFill;
 
-                IBColor           = System.Windows.Media.Brushes.Lime;
-                IBFirstSideColor  = System.Windows.Media.Brushes.Orange;
-                IBSecondHighColor = System.Windows.Media.Brushes.LimeGreen;
-                IBSecondLowColor  = System.Windows.Media.Brushes.Red;
-                IBQuartileColor   = System.Windows.Media.Brushes.DimGray;
                 NakedVPOCColor    = System.Windows.Media.Brushes.Yellow;
                 NakedVAColor      = System.Windows.Media.Brushes.DarkRed;     // prior/naked VVAL
                 NakedVAHColor     = System.Windows.Media.Brushes.Green;       // prior/naked VVAH
@@ -1630,7 +1476,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowNakedSinglePrints = true;
                 ShowPoorHighsLows    = true;
                 ShowExcess           = true;
-                ShowDayType          = true;
                 TPOFontSize          = 8;
                 ShowCurrentTPOLevels = true;    // hide current session TPO lines when using prior levels only
 
@@ -1925,11 +1770,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentSession.BuyVolumeAtPrice[priceLevel] = 0;
                 currentSession.BuyVolumeAtPrice[priceLevel] += upVol;
 
-                // Sliding window buys
-                long wb;
-                windowBuyAtPrice.TryGetValue(priceLevel, out wb);
-                windowBuyAtPrice[priceLevel] = wb + upVol;
-                windowBuyTime[priceLevel] = tickTime;
             }
             if (downVol > 0)
             {
@@ -1937,18 +1777,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentSession.SellVolumeAtPrice[priceLevel] = 0;
                 currentSession.SellVolumeAtPrice[priceLevel] += downVol;
 
-                // Sliding window sells
-                long ws;
-                windowSellAtPrice.TryGetValue(priceLevel, out ws);
-                windowSellAtPrice[priceLevel] = ws + downVol;
-                windowSellTime[priceLevel] = tickTime;
-            }
-
-            // Periodically prune levels whose last trade fell outside the sliding window
-            if ((tickTime - lastWindowCleanup).TotalSeconds >= 1.0)
-            {
-                ClearTradesOutsideSlidingWindow(tickTime);
-                lastWindowCleanup = tickTime;
             }
 
             // --- Per primary-bar bid/ask totals (reset automatically on new bar index) ---
@@ -2035,73 +1863,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentSession.RTHHigh = tickPrice;
                 if (tickPrice < currentSession.RTHLow || currentSession.RTHLow == double.MaxValue)
                     currentSession.RTHLow = tickPrice;
-            }
-
-            // --- Initial Balance accumulation ---
-            // Window = RTHStartTime → RTHStartTime + IBDurationMinutes (both are indicator properties).
-            // No hardcoded clock times; works in whatever timezone your chart/session is set to.
-            if (!currentSession.IBComplete && isRTH)
-            {
-                DateTime  rthStartDt   = GetRthStartDt(tickTime);
-                TimeSpan  rthStartTod  = rthStartDt.TimeOfDay;
-                TimeSpan  ibEndTime    = rthStartTod.Add(TimeSpan.FromMinutes(IBDurationMinutes));
-                // Full Session mode compares absolute times so a template session that
-                // crosses midnight still closes the IB window correctly.
-                bool ibWindowClosed = UseFullSessionRth()
-                    ? tickTime >= rthStartDt.AddMinutes(IBDurationMinutes)
-                    : timeOfDay >= ibEndTime;
-                if (ibWindowClosed)
-                {
-                    // IB window has closed — capture close for ending-zone bias
-                    currentSession.IBComplete = true;
-                    double closePx = Instrument != null
-                        ? Instrument.MasterInstrument.RoundToTickSize(tickPrice) : tickPrice;
-                    currentSession.IBClosePrice = closePx;
-
-                    string formOrder = "unknown";
-                    if (currentSession.IBHighFormTime != DateTime.MinValue && currentSession.IBLowFormTime != DateTime.MinValue)
-                    {
-                        if (currentSession.IBHighFormTime < currentSession.IBLowFormTime)
-                            formOrder = "High 1st / Low 2nd";
-                        else if (currentSession.IBLowFormTime < currentSession.IBHighFormTime)
-                            formOrder = "Low 1st / High 2nd";
-                        else
-                            formOrder = "same tick";
-                    }
-                    string zone = IBEndingZoneLabel(currentSession);
-                    Print("IB closed " + tickTime.ToString("yyyy-MM-dd HH:mm:ss")
-                        + " | RTHStart " + rthStartTod.ToString(@"hh\:mm") + " + " + IBDurationMinutes + "m = " + ibEndTime.ToString(@"hh\:mm")
-                        + " | ticks used " + currentSession.IBFirstTick.ToString("HH:mm:ss") + " -> " + currentSession.IBLastTick.ToString("HH:mm:ss")
-                        + " | IBH " + IBHighPx(currentSession).ToString("F2") + " IBL " + IBLowPx(currentSession).ToString("F2")
-                        + " | form " + formOrder + " | zone " + zone
-                        + " | bias " + IBBiasLabel(currentSession));
-                }
-                else
-                {
-                    if (currentSession.IBFirstTick == DateTime.MinValue) currentSession.IBFirstTick = tickTime;
-                    currentSession.IBLastTick = tickTime;
-                    if (currentSession.IBHigh == 0 || priceLevel > currentSession.IBHigh)
-                        currentSession.IBHigh = priceLevel;
-                    if (currentSession.IBLow  == 0 || priceLevel < currentSession.IBLow)
-                        currentSession.IBLow  = priceLevel;
-
-                    // Exact prices: the level index is a row bucket (TicksPerRow wide), so its
-                    // edges can sit 1+ ticks away from the real IB extreme.
-                    double ibTickPx = Instrument != null
-                        ? Instrument.MasterInstrument.RoundToTickSize(tickPrice) : tickPrice;
-                    if (currentSession.IBHighPrice == 0 || ibTickPx > currentSession.IBHighPrice)
-                    {
-                        currentSession.IBHighPrice = ibTickPx;
-                        currentSession.IBHighFormTime = tickTime;
-                    }
-                    if (currentSession.IBLowPrice  == 0 || ibTickPx < currentSession.IBLowPrice)
-                    {
-                        currentSession.IBLowPrice  = ibTickPx;
-                        currentSession.IBLowFormTime  = tickTime;
-                    }
-                    // Keep rolling close so IBClosePrice is ready the moment the window ends
-                    currentSession.IBClosePrice = ibTickPx;
-                }
             }
 
             // --- Sync cumulative delta indicator with this tick so primary-bar reads are current ---
@@ -2297,17 +2058,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             return tod >= RTHStartTime && tod < RTHEndTime;
         }
 
-        /// <summary>
-        /// Chart-time instant RTH opens for the day containing <paramref name="now"/>. Manual: that date at
-        /// RTH Start Time. Full Session: the open of the current trading-hours-template session.
-        /// </summary>
-        private DateTime GetRthStartDt(DateTime now)
-        {
-            if (UseFullSessionRth() && templateDayBegin != DateTime.MinValue && templateDayBegin <= now)
-                return templateDayBegin;
-            return now.Date + RTHStartTime;
-        }
-
         private void StartNewSession(DateTime barTime, DateTime sessionDate)
         {
             // Capture the closing session before resetting currentSession
@@ -2351,13 +2101,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             sessionRunningBid = 0;
             sessionRunningAsk = 0;
 
-            // Reset sliding-window buy/sell so a new session starts clean
-            windowBuyAtPrice.Clear();
-            windowSellAtPrice.Clear();
-            windowBuyTime.Clear();
-            windowSellTime.Clear();
-            lastWindowCleanup = DateTime.MinValue;
-
             sessions.Add(currentSession);
 
             // Trim to MaxSessionsToShow
@@ -2366,46 +2109,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             ArchiveLevelSession(currentSession);   // LevelAccessor
 
-        }
-
-        /// <summary>
-        /// Drops price levels whose last trade is older than TradeSlidingWindowSeconds.
-        /// Mirrors GemsOrderFlow.ClearTradesOutsideSlidingWindow behaviour (one entry per level;
-        /// the whole level is removed when its most recent trade ages out).
-        /// </summary>
-        private void ClearTradesOutsideSlidingWindow(DateTime time)
-        {
-            int secs = TradeSlidingWindowSeconds > 0 ? TradeSlidingWindowSeconds : 60;
-            if (windowBuyTime.Count > 0)
-            {
-                var expired = new List<int>();
-                foreach (var kv in windowBuyTime)
-                {
-                    if ((time - kv.Value).TotalSeconds > secs)
-                        expired.Add(kv.Key);
-                }
-                for (int i = 0; i < expired.Count; i++)
-                {
-                    int lvl = expired[i];
-                    windowBuyTime.Remove(lvl);
-                    windowBuyAtPrice.Remove(lvl);
-                }
-            }
-            if (windowSellTime.Count > 0)
-            {
-                var expired = new List<int>();
-                foreach (var kv in windowSellTime)
-                {
-                    if ((time - kv.Value).TotalSeconds > secs)
-                        expired.Add(kv.Key);
-                }
-                for (int i = 0; i < expired.Count; i++)
-                {
-                    int lvl = expired[i];
-                    windowSellTime.Remove(lvl);
-                    windowSellAtPrice.Remove(lvl);
-                }
-            }
         }
 
 
@@ -2651,7 +2354,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 session.TPOsAtPrice = session.RthTPOsAtPrice;
                 AnalyzePoorHighsLows(session);
                 AnalyzeExcess(session);
-                ClassifyDayType(session);
                 ComputeSinglePrintZones(session);
                 session.TPOsAtPrice = savedMap;
             }
@@ -2678,7 +2380,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 AnalyzePoorHighsLows(session);
                 AnalyzeExcess(session);
-                ClassifyDayType(session);
                 ComputeSinglePrintZones(session);
             }
         }
@@ -2709,52 +2410,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 && session.TPOsAtPrice.ContainsKey(lowestLevel  + 1)
                 && session.TPOsAtPrice[lowestLevel  + 1].Count  == 1;
             session.ExcessLowPrice  = session.HasExcessLow  ? lowestLevel  * rowSize : 0;
-        }
-
-        private void ClassifyDayType(SessionProfile session)
-        {
-            if (!session.IBComplete || session.IBHigh == 0 || session.IBLow == 0) { session.Classification = DayType.Unknown; return; }
-            double ibRange      = IBHighPx(session) - IBLowPx(session);
-            double sessionRange = session.SessionHigh - session.SessionLow;
-            if (ibRange <= 0 || sessionRange <= 0) { session.Classification = DayType.Unknown; return; }
-
-            double extAbove   = session.SessionHigh - IBHighPx(session);
-            double extBelow   = IBLowPx(session) - session.SessionLow;
-            double extRatio   = (Math.Max(0, extAbove) + Math.Max(0, extBelow)) / ibRange;
-            bool   upperExt   = extAbove > ibRange * 0.5;
-            bool   lowerExt   = extBelow > ibRange * 0.5;
-
-            if (session.TPOsAtPrice.Count > 0)
-            {
-                int totalTPOs = 0;
-                foreach (var kvp in session.TPOsAtPrice) totalTPOs += kvp.Value.Count;
-                var sorted = session.TPOsAtPrice.Keys.OrderBy(k => k).ToList();
-                var dists  = new List<System.Tuple<int, int, int>>();
-                int? dStart = null; int dCount = 0;
-                for (int li = 0; li < sorted.Count; li++)
-                {
-                    int lvl = sorted[li]; int tc = session.TPOsAtPrice[lvl].Count;
-                    if (tc >= 3) { if (dStart == null) { dStart = lvl; dCount = 0; } dCount += tc; }
-                    else { if (dStart != null) { dists.Add(System.Tuple.Create(dStart.Value, sorted[li - 1], dCount)); dStart = null; dCount = 0; } }
-                }
-                if (dStart != null) dists.Add(System.Tuple.Create(dStart.Value, sorted[sorted.Count - 1], dCount));
-                if (dists.Count == 2)
-                {
-                    bool each20 = dists[0].Item3 >= totalTPOs * 0.20 && dists[1].Item3 >= totalTPOs * 0.20;
-                    int gs = dists[0].Item2 + 1, ge = dists[1].Item1 - 1, gl = ge - gs + 1;
-                    bool gapThin = true;
-                    if (gl >= 3) { for (int gl2 = gs; gl2 <= ge; gl2++) { int gc = session.TPOsAtPrice.ContainsKey(gl2) ? session.TPOsAtPrice[gl2].Count : 0; if (gc > 1) { gapThin = false; break; } } }
-                    else gapThin = false;
-                    if (each20 && gapThin) { session.Classification = DayType.DoubleDistribution; return; }
-                }
-            }
-
-            if      (extRatio < 0.25)                                      session.Classification = DayType.Neutral;
-            else if (extRatio > 2.0)                                       session.Classification = DayType.Trend;
-            else if (upperExt && !lowerExt)                                session.Classification = DayType.PShape;
-            else if (lowerExt && !upperExt)                                session.Classification = DayType.BShape;
-            else if (extRatio > 1.0)                                       session.Classification = DayType.NormalVariation;
-            else                                                            session.Classification = DayType.Normal;
         }
 
         private void ComputeSinglePrintZones(SessionProfile session)
@@ -3018,7 +2673,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            // Pass 1: per-session profile + IB + fill
+            // Pass 1: per-session profile + fill
             foreach (var session in sessions)
             {
                 if (session.StartBarIndex < 0) continue;
@@ -3237,10 +2892,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             //      Drawn behind lines, profile bars and letters so nothing is obscured.
             if (ShowLevelZones)
                 RenderLevelZones(chartScale, session, startX, levelEndX);
-
-            // (2) Initial Balance lines — draw as soon as either extreme exists (do not wait for IBComplete)
-            if (ShowInitialBalance && (session.IBHighPrice > 0 || session.IBLowPrice > 0 || session.IBHigh > 0 || session.IBLow > 0))
-                RenderInitialBalance(chartControl, chartScale, session, startX, sessionWidth);
 
             // (3) VbP histogram bars + VA box outline
             if (session.VolumeAtPrice.Count > 0)
@@ -3712,189 +3363,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
-        private void RenderInitialBalance(ChartControl chartControl, ChartScale chartScale,
-            SessionProfile session, int startX, int sessionWidth)
-        {
-            bool hasHigh = session.IBHighPrice > 0 || session.IBHigh > 0;
-            bool hasLow  = session.IBLowPrice  > 0 || session.IBLow  > 0;
-            if (!hasHigh && !hasLow) return;
-
-            // Anchor IB lines to the RTH bar range when available
-            int ibStartX = ChartControl.GetXByBarIndex(ChartBars,
-                Math.Max(0, session.RTHStartBarIndex >= 0 ? session.RTHStartBarIndex : session.StartBarIndex));
-            int ibEndX = ChartControl.GetXByBarIndex(ChartBars,
-                Math.Min(ChartBars.Count - 1, session.RTHEndBarIndex >= 0 ? session.RTHEndBarIndex : session.EndBarIndex));
-            if (ibEndX <= ibStartX) { ibStartX = startX; ibEndX = startX + sessionWidth; }
-
-            // Formation-order colors
-            SharpDX.Direct2D1.Brush highBrush = ibBrush;
-            SharpDX.Direct2D1.Brush lowBrush  = ibBrush;
-            bool highFormKnown = session.IBHighFormTime != DateTime.MinValue;
-            bool lowFormKnown  = session.IBLowFormTime  != DateTime.MinValue;
-
-            if (hasHigh && hasLow && highFormKnown && lowFormKnown)
-            {
-                if (session.IBHighFormTime < session.IBLowFormTime)
-                {
-                    highBrush = ibFirstBrush     ?? ibBrush; // High 1st → orange
-                    lowBrush  = ibSecondLowBrush ?? ibBrush; // Low 2nd  → red
-                }
-                else if (session.IBLowFormTime < session.IBHighFormTime)
-                {
-                    lowBrush  = ibFirstBrush      ?? ibBrush; // Low 1st  → orange
-                    highBrush = ibSecondHighBrush ?? ibBrush; // High 2nd → green
-                }
-            }
-            else if (hasHigh && !hasLow)
-                highBrush = ibFirstBrush ?? ibBrush;
-            else if (hasLow && !hasHigh)
-                lowBrush = ibFirstBrush ?? ibBrush;
-
-            double ibhPrice = hasHigh ? IBHighPx(session) : 0;
-            double iblPrice = hasLow  ? IBLowPx(session)  : 0;
-
-            // --- Quartile levels (25 / 50 / 75 %) inside the IB range ---
-            if (ShowIBQuartiles && hasHigh && hasLow && ibhPrice > iblPrice && ibQuartileBrush != null)
-            {
-                double range = ibhPrice - iblPrice;
-                double q25 = iblPrice + range * 0.25;
-                double q50 = iblPrice + range * 0.50;
-                double q75 = iblPrice + range * 0.75;
-                float y25 = chartScale.GetYByValue(q25);
-                float y50 = chartScale.GetYByValue(q50);
-                float y75 = chartScale.GetYByValue(q75);
-                if (dashStrokeStyle != null)
-                {
-                    RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, y25), new SharpDX.Vector2(ibEndX, y25), ibQuartileBrush, 1f, dashStrokeStyle);
-                    RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, y50), new SharpDX.Vector2(ibEndX, y50), ibQuartileBrush, 1f, dashStrokeStyle);
-                    RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, y75), new SharpDX.Vector2(ibEndX, y75), ibQuartileBrush, 1f, dashStrokeStyle);
-                }
-                else
-                {
-                    RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, y25), new SharpDX.Vector2(ibEndX, y25), ibQuartileBrush, 1f);
-                    RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, y50), new SharpDX.Vector2(ibEndX, y50), ibQuartileBrush, 1f);
-                    RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, y75), new SharpDX.Vector2(ibEndX, y75), ibQuartileBrush, 1f);
-                }
-                if (statsFormat != null)
-                {
-                    RenderTarget.DrawText("25%", statsFormat, new SharpDX.RectangleF(ibStartX + 2, y25 - 7, 30, 12), ibQuartileBrush);
-                    RenderTarget.DrawText("50%", statsFormat, new SharpDX.RectangleF(ibStartX + 2, y50 - 7, 30, 12), ibQuartileBrush);
-                    RenderTarget.DrawText("75%", statsFormat, new SharpDX.RectangleF(ibStartX + 2, y75 - 7, 30, 12), ibQuartileBrush);
-                }
-            }
-
-            // --- IB High / Low lines + labels ---
-            if (hasHigh && highBrush != null)
-            {
-                float ibHighY = chartScale.GetYByValue(ibhPrice);
-                RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, ibHighY), new SharpDX.Vector2(ibEndX, ibHighY), highBrush, 2);
-                if (statsFormat != null)
-                {
-                    string tag = "IBH " + ibhPrice.ToString("F2");
-                    if (hasLow && highFormKnown && lowFormKnown)
-                    {
-                        if (session.IBHighFormTime < session.IBLowFormTime) tag += " 1st";
-                        else if (session.IBLowFormTime < session.IBHighFormTime) tag += " 2nd";
-                    }
-                    RenderTarget.DrawText(tag, statsFormat,
-                        new SharpDX.RectangleF(ibEndX + 3, ibHighY - 7, 130, 14), highBrush);
-                }
-            }
-
-            if (hasLow && lowBrush != null)
-            {
-                float ibLowY = chartScale.GetYByValue(iblPrice);
-                RenderTarget.DrawLine(new SharpDX.Vector2(ibStartX, ibLowY), new SharpDX.Vector2(ibEndX, ibLowY), lowBrush, 2);
-                if (statsFormat != null)
-                {
-                    string tag = "IBL " + iblPrice.ToString("F2");
-                    if (hasHigh && highFormKnown && lowFormKnown)
-                    {
-                        if (session.IBLowFormTime < session.IBHighFormTime) tag += " 1st";
-                        else if (session.IBHighFormTime < session.IBLowFormTime) tag += " 2nd";
-                    }
-                    RenderTarget.DrawText(tag, statsFormat,
-                        new SharpDX.RectangleF(ibEndX + 3, ibLowY - 7, 130, 14), lowBrush);
-                }
-            }
-
-            // --- Bias label once IB is complete (formation order + ending zone) ---
-            if (ShowIBBiasLabel && session.IBComplete && hasHigh && hasLow && statsFormat != null)
-            {
-                string bias = IBBiasLabel(session);
-                string zone = IBEndingZoneLabel(session);
-                SharpDX.Direct2D1.Brush biasBrush = ibBrush;
-                if (bias.StartsWith("LONG", StringComparison.Ordinal))
-                    biasBrush = ibSecondHighBrush ?? ibBrush;
-                else if (bias.StartsWith("SHORT", StringComparison.Ordinal))
-                    biasBrush = ibSecondLowBrush ?? ibBrush;
-                else if (bias.StartsWith("1st", StringComparison.Ordinal))
-                    biasBrush = ibFirstBrush ?? ibBrush;
-
-                float midY = chartScale.GetYByValue((ibhPrice + iblPrice) * 0.5);
-                string label = bias + (zone != "?" ? "  [" + zone + "]" : "");
-                RenderTarget.DrawText(label, statsFormat,
-                    new SharpDX.RectangleF(ibEndX + 3, midY - 7, 180, 14), biasBrush ?? textBrush);
-            }
-        }
-
-        /// <summary>
-        /// Ending-zone label relative to formation order.
-        /// 0-25% = closed in the outer quartile against the side expected to break (strong confirmation).
-        /// 75-100% = closed back near the first-formed side (bias weak / reversed).
-        /// </summary>
-        private string IBEndingZoneLabel(SessionProfile sp)
-        {
-            if (sp == null || sp.IBClosePrice <= 0) return "?";
-            double hi = IBHighPx(sp), lo = IBLowPx(sp);
-            if (hi <= lo) return "?";
-            double range = hi - lo;
-            bool highFirst = sp.IBHighFormTime != DateTime.MinValue && sp.IBLowFormTime != DateTime.MinValue
-                             && sp.IBHighFormTime < sp.IBLowFormTime;
-            bool lowFirst  = sp.IBHighFormTime != DateTime.MinValue && sp.IBLowFormTime != DateTime.MinValue
-                             && sp.IBLowFormTime < sp.IBHighFormTime;
-            double distFromExpected;
-            if (lowFirst)
-                distFromExpected = (hi - sp.IBClosePrice) / range; // expected break = high → 0 = at high
-            else if (highFirst)
-                distFromExpected = (sp.IBClosePrice - lo) / range; // expected break = low  → 0 = at low
-            else
-            {
-                double pct = (sp.IBClosePrice - lo) / range;
-                if (pct <= 0.25) return "0-25%";
-                if (pct <= 0.50) return "25-50%";
-                if (pct <= 0.75) return "50-75%";
-                return "75-100%";
-            }
-            if (distFromExpected <= 0.25) return "0-25%";
-            if (distFromExpected <= 0.50) return "25-50%";
-            if (distFromExpected <= 0.75) return "50-75%";
-            return "75-100%";
-        }
-
-        /// <summary>
-        /// Combined formation-order + ending-zone bias label used on the chart and in the Output window.
-        /// LONG / SHORT only when formation order is clear AND close is in the 0-25% rejection zone.
-        /// </summary>
-        private string IBBiasLabel(SessionProfile sp)
-        {
-            if (sp == null) return "—";
-            bool highFirst = sp.IBHighFormTime != DateTime.MinValue && sp.IBLowFormTime != DateTime.MinValue
-                             && sp.IBHighFormTime < sp.IBLowFormTime;
-            bool lowFirst  = sp.IBHighFormTime != DateTime.MinValue && sp.IBLowFormTime != DateTime.MinValue
-                             && sp.IBLowFormTime < sp.IBHighFormTime;
-            if (!highFirst && !lowFirst) return "NO EDGE";
-
-            string zone = IBEndingZoneLabel(sp);
-            if (zone == "0-25%")
-                return lowFirst ? "LONG bias" : "SHORT bias";
-            if (zone == "25-50%")
-                return lowFirst ? "LONG lean" : "SHORT lean";
-            if (zone == "75-100%")
-                return "FADE / weak";
-            return lowFirst ? "1st=Low" : "1st=High";
-        }
-
         private void RenderVolumeProfile(ChartControl chartControl, ChartScale chartScale,
             SessionProfile session, int startX, int sessionWidth)
         {
@@ -4105,14 +3573,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // ── BUY/SELL FOOTPRINT + VOLUME PROFILE ─────────────────────────────────
                 // Ladder-style columns (left → right), matching GemsTraderLadder:
                 //
-                //  Session Sell | Window Sell | Window Buy | Session Buy | Vol Profile
-                //  (outer red)    (inner)       (inner)      (outer green)
-                //
-                // Either outer pair, inner pair, or both can be enabled.
+                //  Session Sell | Session Buy | Vol Profile
+                //  (sell)         (buy)
 
                 bool showSess = ShowSessionBuysSells;
-                bool showWin  = ShowSlidingWindowBuysSells;
-                if (!showSess && !showWin) showSess = true; // always show at least session
 
                 // Scale font first, then size columns tightly around digit width (ladder-dense).
                 float sampleRowH = Math.Abs(chartScale.GetYByValue(0) - chartScale.GetYByValue(rowSize));
@@ -4120,7 +3584,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // ~5 monospace digits + small pad; clamp so 4 columns stay compact next to the profile
                 float colW = Math.Max(16f, Math.Min(32f, fpFontSize * 2.4f + 6f));
 
-                int nFpCols = (showSess ? 2 : 0) + (showWin ? 2 : 0);
+                int nFpCols = showSess ? 2 : 0;
                 float fpWidth = colW * nFpCols;
                 float fpRight = rightEdge - vpWidth;                  // vol-profile left edge
                 float fpLeft  = fpRight - fpWidth;                    // footprint left edge
@@ -4128,16 +3592,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Column left edges (L→R) — packed, no extra gap between columns
                 float x0 = fpLeft;
                 float x1 = fpLeft + colW;
-                float x2 = fpLeft + colW * 2f;
-                float x3 = fpLeft + colW * 3f;
-                // Map logical columns depending on which pairs are on:
-                // If both: 0=sessSell, 1=winSell, 2=winBuy, 3=sessBuy
-                // If only session: 0=sessSell, 1=sessBuy
-                // If only window:  0=winSell,  1=winBuy
+                // If session columns are on: 0=sessSell, 1=sessBuy
                 float sessSellX = showSess ? x0 : -1f;
-                float winSellX  = showWin  ? (showSess ? x1 : x0) : -1f;
-                float winBuyX   = showWin  ? (showSess ? x2 : x1) : -1f;
-                float sessBuyX  = showSess ? (showWin ? x3 : x1) : -1f;
+                float sessBuyX  = showSess ? x1 : -1f;
 
                 SharpDX.DirectWrite.TextFormat fpBidFormat = null; // trailing (sells face inward)
                 SharpDX.DirectWrite.TextFormat fpAskFormat = null; // leading  (buys face inward)
@@ -4157,10 +3614,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Session totals for the top/bottom control summary.
                 long totalBidVol = 0;  // sell aggressor total
                 long totalAskVol = 0;  // buy  aggressor total
-                long totalWinBuy  = 0; // sliding-window buy  aggressor total (same levels as the window columns)
-                long totalWinSell = 0; // sliding-window sell aggressor total
-                int  winMinLevel = int.MaxValue; // lowest / highest level with live sliding-window trades
-                int  winMaxLevel = int.MinValue;
                 foreach (var kvp2 in session.VolumeAtPrice)
                 {
                     int  lv  = kvp2.Key;
@@ -4169,16 +3622,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     totalBidVol += b;
                     totalAskVol += a;
 
-                    long wbT, wsT;
-                    bool hasWb = windowBuyAtPrice.TryGetValue(lv, out wbT)  && wbT > 0;
-                    bool hasWs = windowSellAtPrice.TryGetValue(lv, out wsT) && wsT > 0;
-                    if (hasWb) totalWinBuy  += wbT;
-                    if (hasWs) totalWinSell += wsT;
-                    if (hasWb || hasWs)
-                    {
-                        if (lv < winMinLevel) winMinLevel = lv;
-                        if (lv > winMaxLevel) winMaxLevel = lv;
-                    }
                 }
 
                 // ── Auction zones: structure first → horizontal control → imbalance confirms ──
@@ -4360,9 +3803,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     long volume = kvp.Value;
                     long sessSell = session.SellVolumeAtPrice.ContainsKey(level) ? session.SellVolumeAtPrice[level] : 0;
                     long sessBuy  = session.BuyVolumeAtPrice.ContainsKey(level)  ? session.BuyVolumeAtPrice[level]  : 0;
-                    long winBuy = 0, winSell = 0;
-                    windowBuyAtPrice.TryGetValue(level, out winBuy);
-                    windowSellAtPrice.TryGetValue(level, out winSell);
 
                     // Imbalance / dominance use session totals (structure is session-based)
                     long bid = sessSell;
@@ -4414,14 +3854,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                             paintImb(sessBuy, sessSell, sessSellBelow, sessBuyAbove, sessBuyX, sessSellX);
                         }
 
-                        // Sliding-window imbalances → inner window columns (same Multiple / Mode / Min Volume)
-                        if (showWin)
-                        {
-                            long winSellBelow = 0, winBuyAbove = 0;
-                            windowSellAtPrice.TryGetValue(level - 1, out winSellBelow);
-                            windowBuyAtPrice.TryGetValue(level + 1, out winBuyAbove);
-                            paintImb(winBuy, winSell, winSellBelow, winBuyAbove, winBuyX, winSellX);
-                        }
                     }
 
                     // ── Column dividers ──
@@ -4435,7 +3867,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
 
                     // ── Footprint numbers (ladder order L→R): ──
-                    // Session Sell | Window Sell | Window Buy | Session Buy
+                    // Session Sell | Session Buy
                     if (ShowVolumeLabels && rowH >= 5 && textBrush != null)
                     {
                         var sellFmt = fpBidFormat ?? volumeFormat;   // trailing
@@ -4449,22 +3881,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                         else if (IsHorizontalImbalance(sessSell, sessBuy) && sameLevelSellDomBrush != null)
                             sessSellBrush = sameLevelSellDomBrush;
 
-                        SharpDX.Direct2D1.Brush winBuyBrush  = textBrush;
-                        SharpDX.Direct2D1.Brush winSellBrush = textBrush;
-                        if (IsHorizontalImbalance(winBuy, winSell) && sameLevelBuyDomBrush != null)
-                            winBuyBrush = sameLevelBuyDomBrush;
-                        else if (IsHorizontalImbalance(winSell, winBuy) && sameLevelSellDomBrush != null)
-                            winSellBrush = sameLevelSellDomBrush;
-
                         if (showSess && sellFmt != null && sessSell > 0)
                             RenderTarget.DrawText(sessSell.ToString(), sellFmt,
                                 new SharpDX.RectangleF(sessSellX, priceTY, colW - 2f, rowH), sessSellBrush);
-                        if (showWin && sellFmt != null && winSell > 0)
-                            RenderTarget.DrawText(winSell.ToString(), sellFmt,
-                                new SharpDX.RectangleF(winSellX, priceTY, colW - 2f, rowH), winSellBrush);
-                        if (showWin && buyFmt != null && winBuy > 0)
-                            RenderTarget.DrawText(winBuy.ToString(), buyFmt,
-                                new SharpDX.RectangleF(winBuyX + 2f, priceTY, colW - 2f, rowH), winBuyBrush);
                         if (showSess && buyFmt != null && sessBuy > 0)
                             RenderTarget.DrawText(sessBuy.ToString(), buyFmt,
                                 new SharpDX.RectangleF(sessBuyX + 2f, priceTY, colW - 2f, rowH), sessBuyBrush);
@@ -4529,83 +3948,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                     if (totBuyFmt != null)
                         RenderTarget.DrawText(totalAskVol.ToString(), totBuyFmt,
                             new SharpDX.RectangleF(buyX + 2f, botY, colW - 2f, totH), askTotBrush);
-                }
-
-                // ── Sliding-window Buy vs Sell totals at top and bottom of the window columns ──
-                // Same treatment as the session totals above: winner highlighted.
-                if (boxBottomY > boxTopY && textBrush != null && showWin && ShowSlidingWindowTotals
-                    && winMaxLevel >= winMinLevel)
-                {
-                    SharpDX.Direct2D1.Brush winSellTotBrush = textBrush;
-                    SharpDX.Direct2D1.Brush winBuyTotBrush  = textBrush;
-                    if (totalWinSell > totalWinBuy && sameLevelSellDomBrush != null)
-                        winSellTotBrush = sameLevelSellDomBrush;
-                    else if (totalWinBuy > totalWinSell && sameLevelBuyDomBrush != null)
-                        winBuyTotBrush = sameLevelBuyDomBrush;
-
-                    // Totals are drawn 2 pt larger than the footprint numbers (so they stand out),
-                    // scale with zoom (fpFontSize follows row height), and get a white box.
-                    var wTotFmt = new SharpDX.DirectWrite.TextFormat(
-                        NinjaTrader.Core.Globals.DirectWriteFactory, "Consolas", fpFontSize + 2f);
-                    wTotFmt.TextAlignment = TextAlignment.Leading;
-                    wTotFmt.WordWrapping  = WordWrapping.NoWrap;
-                    var wBoxBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.White);
-
-                    // Anchor to the live sliding-window range (not the whole profile) so the
-                    // totals travel with the window. Offset = Ticks Per Row x multiple, in ticks above / below that range.
-                    float winTopEdgeY, winBotEdgeY, dummyY;
-                    GetLevelYBounds(chartScale, winMaxLevel, out winTopEdgeY, out dummyY);
-                    GetLevelYBounds(chartScale, winMinLevel, out dummyY, out winBotEdgeY);
-                    int offTicks = Math.Max(1, TicksPerRow) * SlidingWindowTotalsOffsetMultiple;
-                    float offPx = offTicks
-                                  * Math.Abs(chartScale.GetYByValue(0) - chartScale.GetYByValue(TickSize));
-
-                    float wSellRightX = winSellX + colW - 2f; // sell total hugs the inner edge, grows left
-                    float wBuyLeftX   = winBuyX + 2f;         // buy total hugs the inner edge, grows right
-                    float wTopEdge = winTopEdgeY - offPx;
-                    float wBotEdge = winBotEdgeY + offPx;
-                    string wSellTxt = totalWinSell.ToString();
-                    string wBuyTxt  = totalWinBuy.ToString();
-
-                    DrawWindowTotal(wSellTxt, wTotFmt, wSellRightX, 1, wTopEdge, true,  winSellTotBrush, wBoxBrush);
-                    float aggBoxH =
-                    DrawWindowTotal(wBuyTxt,  wTotFmt, wBuyLeftX,   0, wTopEdge, true,  winBuyTotBrush,  wBoxBrush);
-                    DrawWindowTotal(wSellTxt, wTotFmt, wSellRightX, 1, wBotEdge, false, winSellTotBrush, wBoxBrush);
-                    DrawWindowTotal(wBuyTxt,  wTotFmt, wBuyLeftX,   0, wBotEdge, false, winBuyTotBrush,  wBoxBrush);
-
-                    // Go / No-Go circle — replaces the old margin number entirely.
-                    // Centered between the window Buy/Sell totals (top + bottom of the live window).
-                    // Filled circle in winner color = GO (window agrees with session)
-                    // Filled circle in yellow       = NO-GO (disagree or either side tied)
-                    int sessSide = totalAskVol > totalBidVol ? 1 : (totalBidVol > totalAskVol ? -1 : 0); // +1 buy, -1 sell
-                    int winSide  = totalWinBuy > totalWinSell ? 1 : (totalWinSell > totalWinBuy ? -1 : 0);
-                    bool agree   = sessSide != 0 && winSide != 0 && sessSide == winSide;
-
-                    SharpDX.Direct2D1.SolidColorBrush noGoBrush = new SharpDX.Direct2D1.SolidColorBrush(
-                        RenderTarget, new SharpDX.Color4(1.00f, 0.85f, 0.00f, 1f)); // yellow
-                    SharpDX.Direct2D1.Brush circleBrush = noGoBrush;
-                    if (agree)
-                    {
-                        if (winSide > 0 && sameLevelBuyDomBrush != null)
-                            circleBrush = sameLevelBuyDomBrush;
-                        else if (winSide < 0 && sameLevelSellDomBrush != null)
-                            circleBrush = sameLevelSellDomBrush;
-                    }
-
-                    float wCenterX = (wSellRightX + wBuyLeftX) * 0.5f;
-                    float radius = Math.Max(5f, Math.Min(9f, fpFontSize * 0.55f + 2f));
-                    // Top circle (above the window totals)
-                    float topCy = wTopEdge - aggBoxH - 2f - radius;
-                    RenderTarget.FillEllipse(new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(wCenterX, topCy), radius, radius), circleBrush);
-                    RenderTarget.DrawEllipse(new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(wCenterX, topCy), radius, radius), wBoxBrush, 1f);
-                    // Bottom circle (below the window totals)
-                    float botCy = wBotEdge + aggBoxH + 2f + radius;
-                    RenderTarget.FillEllipse(new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(wCenterX, botCy), radius, radius), circleBrush);
-                    RenderTarget.DrawEllipse(new SharpDX.Direct2D1.Ellipse(new SharpDX.Vector2(wCenterX, botCy), radius, radius), wBoxBrush, 1f);
-
-                    noGoBrush.Dispose();
-                    wBoxBrush.Dispose();
-                    wTotFmt.Dispose();
                 }
 
                 if (fpBidFormat != null) { fpBidFormat.Dispose(); fpBidFormat = null; }
@@ -4689,15 +4031,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double range = session.SessionHigh - session.SessionLow;
                 RenderTarget.DrawText("Rng: " + range.ToString("F2"), statsFormat,
                     new SharpDX.RectangleF(panelX, y, 80, lineH), textBrush);
-                y += lineH;
-            }
-
-            // IB range
-            if (session.IBComplete && session.IBHigh > 0 && session.IBLow > 0)
-            {
-                double ibRange = IBHighPx(session) - IBLowPx(session);
-                RenderTarget.DrawText("IB: " + ibRange.ToString("F2"), statsFormat,
-                    new SharpDX.RectangleF(panelX, y, 80, lineH), ibBrush);
                 y += lineH;
             }
 
@@ -5293,92 +4626,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             return Math.Max(-1.0, Math.Min(1.0, c));
         }
 
-        /// <summary>
-        /// Computes regime / control / depth-proxy for ONE bar purely from stored per-bar
-        /// aggressive volume + that bar's OHLC. Used by the history rebuild and by the
-        /// signal engine, so both read exactly the same numbers.
-        /// Returns false when the bar has no tick volume (or is too early in the series).
-        /// </summary>
-        private bool ComputeRegimeAtBar(int bar, out double score, out double dom, out STVPRegimeState st,
-                                        out double bookImb, out double absorp,
-                                        out double barDelta, out double priceDir, out double windowDom)
-        {
-            score = 0; dom = 0; st = STVPRegimeState.Transition; bookImb = 0; absorp = 0;
-            barDelta = 0; priceDir = 0; windowDom = 0;
-
-            Bars pb = BarsArray[0];
-            int window = 8;
-            if (pb == null || bar < window + 2 || bar >= pb.Count) return false;
-
-            long winAsk = 0, winBid = 0;
-            for (int i = 0; i < window; i++)
-            {
-                long a = 0, sv = 0;
-                primaryBarAskVol.TryGetValue(bar - i, out a);
-                primaryBarBidVol.TryGetValue(bar - i, out sv);
-                winAsk += a; winBid += sv;
-            }
-            long winTotal = winAsk + winBid;
-            if (winTotal <= 0) return false;
-
-            windowDom = (double)(winAsk - winBid) / winTotal;
-            double intensity = Math.Abs(windowDom);
-
-            double cl = pb.GetClose(bar), op = pb.GetOpen(bar);
-            int refDir = cl > op ? 1 : (cl < op ? -1 : 0);
-            int same = 0;
-            if (refDir != 0)
-            {
-                for (int i = 0; i < window; i++)
-                {
-                    double c = pb.GetClose(bar - i), o = pb.GetOpen(bar - i);
-                    if ((c > o && refDir > 0) || (c < o && refDir < 0)) same++;
-                    else break;
-                }
-            }
-            double streakScore = (double)same / window;
-
-            double oneSided;
-            if (intensity >= 0.55)
-                oneSided = Math.Min(1.0, intensity + 0.25 * streakScore);
-            else
-                oneSided = 0.35 * streakScore;
-
-            long barAsk = 0, barBid = 0;
-            primaryBarAskVol.TryGetValue(bar, out barAsk);
-            primaryBarBidVol.TryGetValue(bar, out barBid);
-
-            {
-                long barTot = barAsk + barBid;
-                if (barTot > 0)
-                {
-                    double rangeTicks = TickSize > 0 ? (pb.GetHigh(bar) - pb.GetLow(bar)) / TickSize : 0;
-                    double askFrac = (double)barAsk / barTot;
-                    double bidFrac = (double)barBid / barTot;
-                    double aggress = Math.Abs(askFrac - bidFrac);
-                    double rangeNorm = Math.Min(1.0, rangeTicks / 20.0);
-                    absorp = Math.Max(0.0, Math.Min(1.0, aggress * (1.0 - rangeNorm)));
-                    if (absorp > 0.10) bookImb = (bidFrac > askFrac) ? absorp : -absorp;
-                    else               bookImb = windowDom * (1.0 - aggress * 0.5);
-                    bookImb = Math.Max(-1.0, Math.Min(1.0, bookImb));
-                }
-            }
-
-            double balance = (1.0 - intensity) * 0.55 + 0.15;
-            if (absorp > 0.15)
-                balance += 0.40 * absorp;
-            balance = Math.Min(1.0, balance);
-
-            score = Math.Max(-1.0, Math.Min(1.0, oneSided - balance));
-            st = score >= 0.40 ? STVPRegimeState.Discovery
-               : (score <= -0.30 ? STVPRegimeState.Auction
-                                            : STVPRegimeState.Transition);
-
-            dom = ComputeControl(barAsk, barBid, op, pb.GetHigh(bar), pb.GetLow(bar), cl,
-                                 ControlWindowDom(bar, windowDom), out barDelta, out priceDir);
-            return true;
-        }
-
 
         #endregion
 
@@ -5575,19 +4822,6 @@ namespace NinjaTrader.NinjaScript.Indicators
 
 
         // =========================================================
-        //  Auction context: gap, IB, live day bias, L2 risk, log
-        // =========================================================
-
-        /// <summary>
-        /// Day-type gate for IC: block fade on trend days; block chase at extremes on MR days.
-        /// Returns false = block trade.
-        /// </summary>
-
-
-
-
-
-        // =========================================================
         //  AUTO TRADE — market entry + ATR stop/target (draggable)
         // =========================================================
 
@@ -5738,15 +4972,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         #endregion
-        // Exact IB high / low prices; falls back to the row edges if exact price wasn't captured.
-        private double IBHighPx(SessionProfile sp)
-        {
-            return sp.IBHighPrice > 0 ? sp.IBHighPrice : sp.IBHigh * rowSize + rowSize;
-        }
-        private double IBLowPx(SessionProfile sp)
-        {
-            return sp.IBLowPrice > 0 ? sp.IBLowPrice : sp.IBLow * rowSize;
-        }
 
         private int LevelOf(double price)
         {
@@ -5779,31 +5004,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// TicksPerRow = 1: centered on the exact tick price (half-tick above and below).
         /// TicksPerRow &gt; 1: centered on the mid-price of the multi-tick bucket.
         /// </summary>
-        // Draws a sliding-window total as measured text with a white outline box.
-        // align: 0 = anchorX is the left edge (buy side), 1 = anchorX is the right edge (sell side),
-        //        2 = anchorX is the horizontal center (delta).
-        // edgeY = the line the box sits against: its bottom if above, its top if below.
-        // Returns the outer height of the box so callers can stack another box beyond it.
-        private float DrawWindowTotal(string text, SharpDX.DirectWrite.TextFormat fmt, float anchorX,
-            int align, float edgeY, bool above,
-            SharpDX.Direct2D1.Brush textB, SharpDX.Direct2D1.Brush boxB)
-        {
-            if (fmt == null || textB == null || boxB == null) return 0f;
-            using (var layout = new SharpDX.DirectWrite.TextLayout(
-                NinjaTrader.Core.Globals.DirectWriteFactory, text, fmt, 1000f, 1000f))
-            {
-                const float pad = 2f;
-                float w = layout.Metrics.Width;
-                float h = layout.Metrics.Height;
-                float left = (align == 1) ? anchorX - w : (align == 2) ? anchorX - w * 0.5f : anchorX;
-                float top  = above ? edgeY - h - pad : edgeY + pad;
-                RenderTarget.DrawTextLayout(new SharpDX.Vector2(left, top), layout, textB);
-                RenderTarget.DrawRectangle(
-                    new SharpDX.RectangleF(left - pad, top - pad, w + 2f * pad, h + 2f * pad), boxB, 1f);
-                return h + 2f * pad;
-            }
-        }
-
         private void GetLevelYBounds(ChartScale chartScale, int level, out float yTop, out float yBottom)
         {
             double lo = LevelToPrice(level);
@@ -5861,11 +5061,6 @@ namespace NinjaTrader.NinjaScript.Indicators
                 valueAreaFillBrush    = DxBrush(ValueAreaFillColor);
                 levelZoneFillBrush    = DxBrushWithAlpha(LevelZoneColor, 0.20f);
                 levelZoneBorderBrush  = DxBrushWithAlpha(LevelZoneColor, 0.70f);
-                ibBrush               = DxBrush(IBColor);
-                ibFirstBrush          = DxBrush(IBFirstSideColor);
-                ibSecondHighBrush     = DxBrush(IBSecondHighColor);
-                ibSecondLowBrush      = DxBrush(IBSecondLowColor);
-                ibQuartileBrush       = DxBrush(IBQuartileColor);
                 nakedVpocBrush        = DxBrush(NakedVPOCColor);
                 nakedVABrush          = DxBrush(NakedVAColor);
                 nakedVAHBrush         = DxBrush(NakedVAHColor);
@@ -6027,11 +5222,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (valueAreaFillBrush    != null) { valueAreaFillBrush.Dispose();    valueAreaFillBrush    = null; }
             if (levelZoneFillBrush    != null) { levelZoneFillBrush.Dispose();    levelZoneFillBrush    = null; }
             if (levelZoneBorderBrush  != null) { levelZoneBorderBrush.Dispose();  levelZoneBorderBrush  = null; }
-            if (ibBrush               != null) { ibBrush.Dispose();               ibBrush               = null; }
-            if (ibFirstBrush          != null) { ibFirstBrush.Dispose();          ibFirstBrush          = null; }
-            if (ibSecondHighBrush     != null) { ibSecondHighBrush.Dispose();     ibSecondHighBrush     = null; }
-            if (ibSecondLowBrush      != null) { ibSecondLowBrush.Dispose();      ibSecondLowBrush      = null; }
-            if (ibQuartileBrush       != null) { ibQuartileBrush.Dispose();       ibQuartileBrush       = null; }
             if (nakedVpocBrush        != null) { nakedVpocBrush.Dispose();        nakedVpocBrush        = null; }
             if (nakedVABrush          != null) { nakedVABrush.Dispose();          nakedVABrush          = null; }
             if (nakedVAHBrush         != null) { nakedVAHBrush.Dispose();         nakedVAHBrush         = null; }
