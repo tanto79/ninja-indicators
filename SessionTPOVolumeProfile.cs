@@ -425,6 +425,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush tpoVALBrush;       // TPO VAL line
         private SharpDX.Direct2D1.Brush nakedTPOPocBrush;  // naked TPO POC extension
         private SharpDX.Direct2D1.Brush nakedTPOVABrush;   // naked TPO VAH/VAL extension
+        private SharpDX.Direct2D1.Brush priorTPOVABrush;   // prior session TPO VAH/VAL extension
         private SharpDX.Direct2D1.Brush tpoSD2Brush;       // TPO SD2H/SD2L lines
         private SharpDX.Direct2D1.Brush nakedTPOSD2Brush;  // naked TPO SD2H/SD2L extension
         private SharpDX.Direct2D1.Brush tpoSD3Brush;       // TPO SD3H/SD3L lines
@@ -1318,6 +1319,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         public string TPOVABoxColorSerialize
         { get { return Serialize.BrushToString(TPOVABoxColor); } set { TPOVABoxColor = Serialize.StringToBrush(value); } }
 
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Prior Session TPO VAH/VAL Color", Order = 13, GroupName = "8. TPO Colors")]
+        public System.Windows.Media.Brush PriorSessionTPOVAColor { get; set; }
+        [Browsable(false)]
+        public string PriorSessionTPOVAColorSerialize
+        { get { return Serialize.BrushToString(PriorSessionTPOVAColor); } set { PriorSessionTPOVAColor = Serialize.StringToBrush(value); } }
+
         #endregion
 
 
@@ -1515,6 +1524,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 PoorHighLowColor     = System.Windows.Media.Brushes.OrangeRed;
                 ExcessColor          = System.Windows.Media.Brushes.LimeGreen;
                 TPOVABoxColor        = System.Windows.Media.Brushes.RoyalBlue;
+
+                var priorTPOVA = new System.Windows.Media.SolidColorBrush(
+                    System.Windows.Media.Color.FromArgb(255, 30, 144, 255));
+                priorTPOVA.Freeze();
+                PriorSessionTPOVAColor = priorTPOVA;
 
             }
             else if (State == State.Configure)
@@ -3194,16 +3208,19 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             if ((session == mostRecentCompletedSession) ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
             {
+                SharpDX.Direct2D1.Brush tpoVABrush = session == mostRecentCompletedSession
+                    ? priorTPOVABrush : nakedTPOVABrush;
+
                 if (session.TPOVAH > 0)
                 {
                     RenderExtensionLine(chartScale, endX, session.TPOVAH * rowSize + rowSize,
-                        session.TPOVAHBreakTime, nakedTPOVABrush, pfx + rPfx + "TPOVAH " + (session.TPOVAH * rowSize + rowSize).ToString("F2"), ShowLevelZones);
+                        session.TPOVAHBreakTime, tpoVABrush, pfx + rPfx + "TPOVAH " + (session.TPOVAH * rowSize + rowSize).ToString("F2"), ShowLevelZones);
                     DrawLevelRoleTag(chartScale, endX, RoleKey(session, "TPOVAH"), session.TPOVAH * rowSize + rowSize, session.TPOVAHBreakTime);
                 }
                 if (session.TPOVAL > 0)
                 {
                     RenderExtensionLine(chartScale, endX, session.TPOVAL * rowSize,
-                        session.TPOVALBreakTime, nakedTPOVABrush, pfx + rPfx + "TPOVAL " + (session.TPOVAL * rowSize).ToString("F2"), ShowLevelZones);
+                        session.TPOVALBreakTime, tpoVABrush, pfx + rPfx + "TPOVAL " + (session.TPOVAL * rowSize).ToString("F2"), ShowLevelZones);
                     DrawLevelRoleTag(chartScale, endX, RoleKey(session, "TPOVAL"), session.TPOVAL * rowSize, session.TPOVALBreakTime);
                 }
             }
@@ -4928,6 +4945,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 tpoVALBrush      = DxBrush(TPOVALColor);
                 nakedTPOPocBrush = DxBrush(NakedTPOPOCColor);
                 nakedTPOVABrush  = DxBrush(NakedTPOVAColor);
+                priorTPOVABrush  = DxBrush(PriorSessionTPOVAColor);
                 tpoSD2Brush      = DxBrush(TPOSDTwoColor);
                 nakedTPOSD2Brush = DxBrush(NakedTPOSDTwoColor);
                 tpoSD3Brush      = DxBrush(TPOSDThreeColor);
@@ -5066,6 +5084,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (tpoVALBrush      != null) { tpoVALBrush.Dispose();      tpoVALBrush      = null; }
             if (nakedTPOPocBrush != null) { nakedTPOPocBrush.Dispose(); nakedTPOPocBrush = null; }
             if (nakedTPOVABrush  != null) { nakedTPOVABrush.Dispose();  nakedTPOVABrush  = null; }
+            if (priorTPOVABrush  != null) { priorTPOVABrush.Dispose();  priorTPOVABrush  = null; }
             if (tpoSD2Brush      != null) { tpoSD2Brush.Dispose();      tpoSD2Brush      = null; }
             if (nakedTPOSD2Brush != null) { nakedTPOSD2Brush.Dispose(); nakedTPOSD2Brush = null; }
             if (tpoSD3Brush      != null) { tpoSD3Brush.Dispose();      tpoSD3Brush      = null; }
