@@ -136,8 +136,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 double ymPrice = Math.Round(rec.Price * ratio / ymTick) * ymTick;
 
-                int startIdx = ChartBars.GetBarIndexByTime(chartControl, rec.SessionStart);
-                int endIdx   = ChartBars.GetBarIndexByTime(chartControl, rec.SessionEnd);
+                int startIdx = Bars.GetBar(rec.SessionStart);
+                int endIdx   = Bars.GetBar(rec.SessionEnd);
                 if (startIdx < 0) continue;
                 if (endIdx > lastBar) endIdx = lastBar;
                 int endDrawIdx = Math.Max(endIdx, Math.Min(lastBar, startIdx + 10));
