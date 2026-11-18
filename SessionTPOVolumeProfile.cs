@@ -2529,7 +2529,6 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             public LevelRoleState State;
             public double         Level;
-            public DateTime       BreakTime;
         }
 
         private string RoleKey(SessionProfile s, string type)
@@ -2571,8 +2570,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int i = 0; i < roleTrackers.Count; i++)
             {
                 RoleTracker t = roleTrackers[i];
-                if (t.BreakTime != DateTime.MinValue && t.BreakTime < currentSession.StartTime)
-                    continue;
                 RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol);
             }
         }
@@ -2591,28 +2588,28 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowPriorSessionLevels)
                 {
                     if (s.HighLevel > 0)
-                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh, s.HighBreakTime);
+                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh);
                     if (s.LowLevel > 0)
-                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow, s.LowBreakTime);
+                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow);
                 }
 
                 if ((isMostRecent ? ShowPriorSessionVPOC : ShowNakedVPOC) && s.VPOCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5, s.VPOCBreakTime);
+                    AddRoleTracker(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5);
 
                 if (ShowNakedVAHVAL)
                 {
                     if (s.VVAH > 0)
-                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, s.VVAHBreakTime);
+                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize);
                     if (s.VVAL > 0)
-                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize, s.VVALBreakTime);
+                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize);
                 }
 
                 if (ShowNakedTPOPOC && s.POCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5, s.TPOPOCBreakTime);
+                    AddRoleTracker(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5);
                 if (ShowNakedTPOVAHVAL && s.TPOVAH > 0)
-                    AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize, s.TPOVAHBreakTime);
+                    AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize);
                 if (ShowNakedTPOVAHVAL && s.TPOVAL > 0)
-                    AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize, s.TPOVALBreakTime);
+                    AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize);
             }
 
             roleTrackerSessionCount = sessions.Count;
@@ -2626,7 +2623,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             roleTrackerNakedTPOVA   = ShowNakedTPOVAHVAL;
         }
 
-        private void AddRoleTracker(string key, double level, DateTime breakTime)
+        private void AddRoleTracker(string key, double level)
         {
             LevelRoleState st;
             if (!levelRoleStates.TryGetValue(key, out st) || st == null)
@@ -2636,9 +2633,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             RoleTracker t = new RoleTracker();
-            t.State     = st;
-            t.Level     = level;
-            t.BreakTime = breakTime;
+            t.State = st;
+            t.Level = level;
             roleTrackers.Add(t);
         }
 
@@ -2736,16 +2732,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         /// <summary>
         /// Draws the live role tag under a prior-session or naked level line at the
-        /// right-edge label anchor. Visible whenever the line's own label is visible:
-        /// untested lines always tag; broken lines tag only while the break belongs
-        /// to the current session.
+        /// right-edge label anchor. Tags render for every tracked level whose line
+        /// is drawn, regardless of which session the level was last broken in, so
+        /// prior-session levels always carry their current role.
         /// </summary>
-        private void DrawLevelRoleTag(ChartScale chartScale, string key, double price, DateTime breakTime)
+        private void DrawLevelRoleTag(ChartScale chartScale, string key, double price)
         {
             if (roleBreakingBrush == null || roleUntestedBrush == null) return;
-            if (!(breakTime == DateTime.MinValue
-                  || (currentSession != null && breakTime >= currentSession.StartTime)))
-                return;
 
             LevelRoleState st;
             if (!levelRoleStates.TryGetValue(key, out st) || st == null) return;
@@ -3087,7 +3080,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double vpocPrice = session.VPOCLevel * rowSize + (rowSize * 0.5);
                 RenderExtensionLine(chartScale, endX, vpocPrice,
                     session.VPOCBreakTime, nakedVpocBrush, pfx + "VPOC " + vpocPrice.ToString("F2"), ShowLevelZones);
-                DrawLevelRoleTag(chartScale, RoleKey(session, "VPOC"), vpocPrice, session.VPOCBreakTime);
+                DrawLevelRoleTag(chartScale, RoleKey(session, "VPOC"), vpocPrice);
             }
 
             // Naked VVAH / VVAL
@@ -3098,14 +3091,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                     double vvahPrice = session.VVAH * rowSize + rowSize;
                     RenderExtensionLine(chartScale, endX, vvahPrice,
                         session.VVAHBreakTime, nakedVAHBrush, pfx + "VVAH " + vvahPrice.ToString("F2"), ShowLevelZones);
-                    DrawLevelRoleTag(chartScale, RoleKey(session, "VVAH"), vvahPrice, session.VVAHBreakTime);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "VVAH"), vvahPrice);
                 }
                 if (session.VVAL > 0)
                 {
                     double vvalPrice = session.VVAL * rowSize;
                     RenderExtensionLine(chartScale, endX, vvalPrice,
                         session.VVALBreakTime, nakedVABrush, pfx + "VVAL " + vvalPrice.ToString("F2"), ShowLevelZones);
-                    DrawLevelRoleTag(chartScale, RoleKey(session, "VVAL"), vvalPrice, session.VVALBreakTime);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "VVAL"), vvalPrice);
                 }
             }
 
@@ -3150,13 +3143,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     RenderExtensionLine(chartScale, endX, session.SessionHigh,
                         session.HighBreakTime, priorHighLowBrush, pfx + "HI " + session.SessionHigh.ToString("F2"), ShowLevelZones);
-                    DrawLevelRoleTag(chartScale, RoleKey(session, "HI"), session.SessionHigh, session.HighBreakTime);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "HI"), session.SessionHigh);
                 }
                 if (session.LowLevel > 0)
                 {
                     RenderExtensionLine(chartScale, endX, session.SessionLow,
                         session.LowBreakTime, priorHighLowBrush, pfx + "LO " + session.SessionLow.ToString("F2"), ShowLevelZones);
-                    DrawLevelRoleTag(chartScale, RoleKey(session, "LO"), session.SessionLow, session.LowBreakTime);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "LO"), session.SessionLow);
                 }
             }
 
@@ -3168,7 +3161,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double p = session.POCLevel * rowSize + (rowSize * 0.5);
                 RenderExtensionLine(chartScale, endX, p,
                     session.TPOPOCBreakTime, nakedTPOPocBrush, pfx + rPfx + "POC " + p.ToString("F2"), ShowLevelZones);
-                DrawLevelRoleTag(chartScale, RoleKey(session, "TPOPOC"), p, session.TPOPOCBreakTime);
+                DrawLevelRoleTag(chartScale, RoleKey(session, "TPOPOC"), p);
             }
             if (ShowNakedTPOVAHVAL)
             {
@@ -3176,13 +3169,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     RenderExtensionLine(chartScale, endX, session.TPOVAH * rowSize + rowSize,
                         session.TPOVAHBreakTime, nakedTPOVABrush, pfx + rPfx + "TPOVAH " + (session.TPOVAH * rowSize + rowSize).ToString("F2"), ShowLevelZones);
-                    DrawLevelRoleTag(chartScale, RoleKey(session, "TPOVAH"), session.TPOVAH * rowSize + rowSize, session.TPOVAHBreakTime);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "TPOVAH"), session.TPOVAH * rowSize + rowSize);
                 }
                 if (session.TPOVAL > 0)
                 {
                     RenderExtensionLine(chartScale, endX, session.TPOVAL * rowSize,
                         session.TPOVALBreakTime, nakedTPOVABrush, pfx + rPfx + "TPOVAL " + (session.TPOVAL * rowSize).ToString("F2"), ShowLevelZones);
-                    DrawLevelRoleTag(chartScale, RoleKey(session, "TPOVAL"), session.TPOVAL * rowSize, session.TPOVALBreakTime);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "TPOVAL"), session.TPOVAL * rowSize);
                 }
             }
             if (ShowNakedTPOSD2)
