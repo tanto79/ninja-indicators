@@ -769,9 +769,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int LevelRoleAcceptSeconds { get; set; }
 
         [NinjaScriptProperty]
-        [Range(1, 1000)]
-        [Display(Name = "Role Touch Tolerance Ticks", Description = "Ticks around each level that count as touching it — used identically by the role classifier and naked-level termination (default 8)", Order = 3, GroupName = "3B. Level Roles")]
+        [Range(0, 1000)]
+        [Display(Name = "Role Touch Tolerance Ticks", Description = "Ticks around each level that count as touching it — used identically by the role classifier and naked-level termination. 0 = only an actual print at the line's price. (default 8)", Order = 3, GroupName = "3B. Level Roles")]
         public int LevelRoleTouchToleranceTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 2000000000)]
+        [Display(Name = "Role Quality Min Volume", Description = "Minimum volume at a level interaction to grade the role tag's quality: absorbed (dominant aggression into the level rejected), confirmed (dominant aggression behind an accepted break), thin (below this minimum). 0 disables quality annotation.", Order = 8, GroupName = "3B. Level Roles")]
+        public int RoleInteractionMinVolume { get; set; }
 
         [NinjaScriptProperty]
         [XmlIgnore]
@@ -1404,6 +1409,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LevelRolesHiLo               = true;
                 LevelRoleAcceptSeconds       = 180;  // price must hold ~3 minutes beyond a level before its role flips
                 LevelRoleTouchToleranceTicks = 8;
+                RoleInteractionMinVolume     = 100;
                 LevelRoleSupportColor        = System.Windows.Media.Brushes.LimeGreen;
                 LevelRoleResistanceColor     = System.Windows.Media.Brushes.Red;
                 LevelRoleBreakingColor       = System.Windows.Media.Brushes.Gold;
@@ -1810,7 +1816,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Globex when the chart runs an RTH template) never reaches the machine, so
             // roles freeze at the template close and resume at the next template open.
             if (ShowLevelRoles && tickTime >= lastKeyBegin && tickTime <= lastKeyEnd)
-                UpdateLevelRoles(tickPrice, tickTime);
+                UpdateLevelRoles(tickPrice, tickTime, upVol, downVol);
 
             // --- TPO letter construction ---
             if (ShowTPOLetters || ShowTPOPOC || ShowTPOVAHVAL || ShowTPOSD2 || ShowTPOSD3
@@ -2423,7 +2429,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // VPOC test
                 if (!s.VPOCTested && s.VPOCLevel > 0)
                 {
-                    if (IsLevelTouched(price, s.VPOCLevel * rowSize + rowSize * 0.5))
+                    if (IsLevelTouched(price, PocPrice(s.VPOCLevel)))
                         { s.VPOCTested = true; s.VPOCBreakTime = breakTime; }
                 }
 
@@ -2495,7 +2501,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (!s.TPOPOCTested && s.POCLevel > 0)
                 {
-                    if (IsLevelTouched(price, s.POCLevel * rowSize + rowSize * 0.5))
+                    if (IsLevelTouched(price, PocPrice(s.POCLevel)))
                         { s.TPOPOCTested = true; s.TPOPOCBreakTime = breakTime; }
                 }
                 if (!s.TPOVAHTested && s.TPOVAH > 0)
@@ -2548,6 +2554,14 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #region Level Roles (live support/resistance state machine)
 
+        private enum LRQuality
+        {
+            None,       // no volume evidence (or annotation disabled)
+            Absorbed,   // dominant aggression into the level was rejected (strong hold)
+            Thin,       // below RoleInteractionMinVolume — weak/unconfirmed interaction
+            Confirmed   // dominant aggression behind the accepted break
+        }
+
         private enum LRState
         {
             Untested,   // no tick has reached the touch-tolerance band this session
@@ -2565,6 +2579,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             public bool     PendingReject; // current band entry can mature into a completed rejection
             public int      Touches;
             public int      Helds;
+            public LRQuality Quality;      // quality of the interaction behind the last hold/flip
+            public long     BandBuy;       // aggressor buy volume of the current/last touch-band visit
+            public long     BandSell;      // aggressor sell volume of the current/last touch-band visit
+            public long     BreakBuy;      // aggressor buy volume of the current break run
+            public long     BreakSell;     // aggressor sell volume of the current break run
             public int      BreakDir;     // direction of the running break attempt: +1 up, -1 down, 0 = none
             public double   BreakElapsed; // traded seconds in the current break run (template-session gaps excluded)
         }
@@ -2579,6 +2598,34 @@ namespace NinjaTrader.NinjaScript.Indicators
         { return s.StartTime.Ticks.ToString() + "|" + type; }
 
         /// <summary>
+        /// Price of a profile row's POC center snapped to the nearest tradable tick —
+        /// used for every VPOC / TPO POC line, zone, label, tracker and touch test so
+        /// the level sits on the tick grid (row centers fall between ticks whenever
+        /// Ticks Per Row is odd, which would make a 0-tick tolerance untouchable).
+        /// </summary>
+        private double PocPrice(int level)
+        {
+            double raw = level * rowSize + rowSize * 0.5;
+            return Instrument != null && Instrument.MasterInstrument != null
+                ? Instrument.MasterInstrument.RoundToTickSize(raw)
+                : Math.Round(raw / TickSize) * TickSize;
+        }
+
+        /// <summary>
+        /// <summary>
+        /// Touch band half-width in price. Ticks > 0: exactly that many ticks.
+        /// 0 (print-at-the-line): half a tick — every tracked line price sits on
+        /// the tick grid (POC centers via PocPrice), so only an actual print at or
+        /// on the line's exact price registers as a touch.
+        /// </summary>
+        private double TouchTolerance()
+        {
+            double ts  = rowSize / Math.Max(1, TicksPerRow);
+            int ticks  = Math.Max(0, LevelRoleTouchToleranceTicks);
+            return ticks > 0 ? ticks * ts : ts * 0.5;
+        }
+
+        /// <summary>
         /// The one touch definition shared by naked-level termination and the role
         /// classifier: within Role Touch Tolerance Ticks of the exact drawn line
         /// price. A level can never end as “tested” while the classifier still
@@ -2586,9 +2633,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// </summary>
         private bool IsLevelTouched(double price, double linePrice)
         {
-            double ts  = rowSize / Math.Max(1, TicksPerRow);
-            double tol = Math.Max(1, LevelRoleTouchToleranceTicks) * ts;
-            return Math.Abs(price - linePrice) <= tol;
+            return Math.Abs(price - linePrice) <= TouchTolerance();
         }
 
         /// <summary>
@@ -2604,7 +2649,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// Per-tick execution is allocation-free: tracked levels are cached and the
         /// cache is rebuilt only when the session set or visibility toggles change.
         /// </summary>
-        private void UpdateLevelRoles(double tickPrice, DateTime tickTime)
+        private void UpdateLevelRoles(double tickPrice, DateTime tickTime,
+            long upVol, long downVol)
         {
             if (currentSession == null || sessions == null || sessions.Count < 2) return;
 
@@ -2636,13 +2682,12 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (!cacheValid)
                 RebuildRoleTrackers();
 
-            double ts  = rowSize / Math.Max(1, TicksPerRow);
-            double tol = Math.Max(1, LevelRoleTouchToleranceTicks) * ts;
+            double tol = TouchTolerance();
 
             for (int i = 0; i < roleTrackers.Count; i++)
             {
                 RoleTracker t = roleTrackers[i];
-                RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol, tradedDelta);
+                RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol, tradedDelta, upVol, downVol);
             }
         }
 
@@ -2666,7 +2711,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
 
                 if ((isMostRecent ? ShowPriorSessionVPOC : ShowNakedVPOC) && s.VPOCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5);
+                    AddRoleTracker(RoleKey(s, "VPOC"), PocPrice(s.VPOCLevel));
 
                 if (ShowNakedVAHVAL)
                 {
@@ -2677,7 +2722,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
 
                 if ((isMostRecent ? ShowPriorSessionTPOPOC : ShowNakedTPOPOC) && s.POCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5);
+                    AddRoleTracker(RoleKey(s, "TPOPOC"), PocPrice(s.POCLevel));
                 if (isMostRecent ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
                 {
                     if (s.TPOVAH > 0)
@@ -2717,7 +2762,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         private void RunLevelRoleMachine(LevelRoleState st, double level, double tickPrice,
-            DateTime tickTime, double tol, double tradedDelta)
+            DateTime tickTime, double tol, double tradedDelta, long upVol, long downVol)
         {
             double d  = tickPrice - level;
             double ad = Math.Abs(d);
@@ -2735,7 +2780,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     st.InBand        = true;
                     st.PendingReject = true;
                     st.Touches++;
+                    st.BandBuy       = 0;
+                    st.BandSell      = 0;
                 }
+                st.BandBuy  += upVol;
+                st.BandSell += downVol;
                 if (st.State == LRState.Untested)
                     st.State = LRState.Testing;
                 return;
@@ -2748,7 +2797,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (side != st.Role)
                 {
-                    // reclaim: the flip failed, the level is back in its original role
+                    // reclaim: the flip failed, the level is back in its original role;
+                    // a decisive reclaim without a fresh touch registers no quality
+                    st.Quality       = LRQuality.None;
                     st.State         = LRState.Held;
                     st.Helds++;
                     st.Role          = side;
@@ -2778,6 +2829,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     // decisive return to the role side before acceptance = failed break
                     st.Helds++;
+                    st.Quality       = ClassifyTest(st, st.Role);
                     st.BreakDir      = 0;
                     st.BreakElapsed  = 0;
                     st.PendingReject = false;
@@ -2786,6 +2838,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     // the band entry just left behind matured into a completed rejection
                     st.Helds++;
+                    st.Quality       = ClassifyTest(st, st.Role);
                     st.PendingReject = false;
                 }
                 st.State = LRState.Held;
@@ -2798,11 +2851,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     st.BreakDir     = side;
                     st.BreakElapsed = 0;
+                    st.BreakBuy     = 0;
+                    st.BreakSell    = 0;
                 }
                 else
                     st.BreakElapsed += tradedDelta;
+                st.BreakBuy  += upVol;
+                st.BreakSell += downVol;
                 if (st.BreakElapsed >= LevelRoleAcceptSeconds)
                 {
+                    st.Quality       = ClassifyBreak(st);
                     st.State         = LRState.Flipped;
                     st.Role          = side;
                     st.BreakDir      = 0;
@@ -2811,6 +2869,51 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
                 else
                     st.State = LRState.Breaking;
+            }
+        }
+
+        /// <summary>Grades a completed test: dominant aggression pushed INTO the
+        /// level (opposite the holding role) yet was rejected — absorbed.</summary>
+        private LRQuality ClassifyTest(LevelRoleState st, int role)
+        {
+            long vol = st.BandBuy + st.BandSell;
+            if (RoleInteractionMinVolume <= 0 || vol <= 0)
+                return LRQuality.None;
+            if (vol < RoleInteractionMinVolume)
+                return LRQuality.Thin;
+            long intoVol = role > 0 ? st.BandSell : st.BandBuy;
+            return intoVol * 100 >= vol * 60 ? LRQuality.Absorbed : LRQuality.None;
+        }
+
+        /// <summary>Grades an accepted break: aggression skewed toward the break
+        /// direction confirms it; below minimum volume it is thin.</summary>
+        private LRQuality ClassifyBreak(LevelRoleState st)
+        {
+            long vol = st.BreakBuy + st.BreakSell;
+            if (RoleInteractionMinVolume <= 0 || vol <= 0)
+                return LRQuality.None;
+            if (vol < RoleInteractionMinVolume)
+                return LRQuality.Thin;
+            long withVol = st.BreakDir > 0 ? st.BreakBuy : st.BreakSell;
+            return withVol * 100 >= vol * 60 ? LRQuality.Confirmed : LRQuality.None;
+        }
+
+        private string FormatVol(long v)
+        {
+            if (v >= 100000) return (v / 1000).ToString() + "k";
+            if (v >= 1000)   return (v / 1000.0).ToString("F1") + "k";
+            return v.ToString();
+        }
+
+        private string RoleQualityText(LevelRoleState st, long vol)
+        {
+            switch (st.Quality)
+            {
+                case LRQuality.Absorbed:  return " · abs";
+                case LRQuality.Confirmed: return " · conf";
+                case LRQuality.Thin:      return " · thin";
+                default:
+                    return (vol > 0 && RoleInteractionMinVolume > 0) ? " · " + FormatVol(vol) : "";
             }
         }
 
@@ -2831,6 +2934,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             LevelRoleState st;
             if (!levelRoleStates.TryGetValue(key, out st) || st == null) return;
+            long tradedBandVol  = st.BandBuy + st.BandSell;
+            long tradedBreakVol = st.BreakBuy + st.BreakSell;
 
             string roleWord = st.Role < 0 ? "Resistance" : "Support";
             SharpDX.Direct2D1.Brush brush;
@@ -2845,6 +2950,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 case LRState.Testing:
                     brush = roleBreakingBrush;
                     tag   = roleWord + " · testing";
+                    if (tradedBandVol > 0)
+                        tag += " · " + FormatVol(tradedBandVol);
                     break;
                 case LRState.Held:
                     brush = st.Role < 0 ? roleResistanceBrush : roleSupportBrush;
@@ -2852,10 +2959,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                         tag = roleWord + " · held x" + st.Helds.ToString();
                     else
                         tag = roleWord;
+                    tag += RoleQualityText(st, tradedBandVol);
                     break;
                 case LRState.Flipped:
                     brush = st.Role < 0 ? roleResistanceBrush : roleSupportBrush;
                     tag   = roleWord + " · flipped";
+                    tag  += RoleQualityText(st, tradedBreakVol);
                     break;
                 default: // Breaking
                     int elapsed = (int)st.BreakElapsed;
@@ -3172,7 +3281,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool vpocOn = (session == mostRecentCompletedSession) ? ShowPriorSessionVPOC : ShowNakedVPOC;
             if (vpocOn && session.VPOCLevel > 0)
             {
-                double vpocPrice = session.VPOCLevel * rowSize + (rowSize * 0.5);
+                double vpocPrice = PocPrice(session.VPOCLevel);
                 RenderExtensionLine(chartScale, endX, vpocPrice,
                     session.VPOCBreakTime, nakedVpocBrush, pfx + "VPOC " + vpocPrice.ToString("F2"), ShowLevelZones);
                 DrawLevelRoleTag(chartScale, endX, RoleKey(session, "VPOC"), vpocPrice, session.VPOCBreakTime);
@@ -3255,7 +3364,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             bool tpocOn = (session == mostRecentCompletedSession) ? ShowPriorSessionTPOPOC : ShowNakedTPOPOC;
             if (tpocOn && session.POCLevel > 0)
             {
-                double p = session.POCLevel * rowSize + (rowSize * 0.5);
+                double p = PocPrice(session.POCLevel);
                 SharpDX.Direct2D1.Brush tpocBrush = session == mostRecentCompletedSession
                     ? priorTPOPocBrush : nakedTPOPocBrush;
                 RenderExtensionLine(chartScale, endX, p,
@@ -3329,7 +3438,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // Volume VPOC
             if (ShowCurrentVolumeLevels && ShowVPOC && currentSession.VPOCLevel > 0 && vpocBrush != null)
             {
-                double p = currentSession.VPOCLevel * rowSize + (rowSize * 0.5);
+                double p = PocPrice(currentSession.VPOCLevel);
                 float  y = chartScale.GetYByValue(p);
                 RenderTarget.DrawText("VPOC " + p.ToString("F2"), statsFormat,
                     new SharpDX.RectangleF(labelX, y - 7, lw, lh), vpocBrush);
@@ -3368,7 +3477,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             string tpoPfx = SplitGlobexRthTPO ? "r" : "";
             if (ShowCurrentTPOLevels && ShowTPOPOC && currentSession.POCLevel > 0 && tpoPocBrush != null)
             {
-                double p = currentSession.POCLevel * rowSize + (rowSize * 0.5);
+                double p = PocPrice(currentSession.POCLevel);
                 float  y = chartScale.GetYByValue(p);
                 RenderTarget.DrawText(tpoPfx + "POC " + p.ToString("F2"), statsFormat, new SharpDX.RectangleF(labelX, y - 7, lw, lh), tpoPocBrush);
             }
@@ -3403,7 +3512,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (SplitGlobexRthTPO && ShowCurrentTPOLevels)
             {
                 if (ShowTPOPOC && currentSession.GlobexPOCLevel > 0 && tpoPocBrush != null)
-                { double p = currentSession.GlobexPOCLevel * rowSize + (rowSize * 0.5); float y = chartScale.GetYByValue(p);
+                { double p = PocPrice(currentSession.GlobexPOCLevel); float y = chartScale.GetYByValue(p);
                   RenderTarget.DrawText("gPOC " + p.ToString("F2"), statsFormat, new SharpDX.RectangleF(labelX, y - 7, lw, lh), tpoPocBrush); }
                 if (ShowTPOVAHVAL)
                 {
@@ -3443,7 +3552,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             int   lh     = 12;
             // Volume levels
             if (ShowVPOC && session.VPOCLevel > 0 && vpocBrush != null)
-            { double p = session.VPOCLevel * rowSize + (rowSize * 0.5); float y = chartScale.GetYByValue(p);
+            { double p = PocPrice(session.VPOCLevel); float y = chartScale.GetYByValue(p);
               RenderTarget.DrawText("VPOC " + p.ToString("F2"), statsFormat, new SharpDX.RectangleF(labelX, y - 6, lw, lh), vpocBrush); }
             if (ShowVolumeValueArea)
             {
@@ -3474,7 +3583,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
             // TPO levels
             if (ShowTPOPOC && session.POCLevel > 0 && tpoPocBrush != null)
-            { double p = session.POCLevel * rowSize + (rowSize * 0.5); float y = chartScale.GetYByValue(p);
+            { double p = PocPrice(session.POCLevel); float y = chartScale.GetYByValue(p);
               RenderTarget.DrawText("POC " + p.ToString("F2"), statsFormat, new SharpDX.RectangleF(labelX, y - 6, lw, lh), tpoPocBrush); }
             if (ShowTPOVAHVAL)
             {
@@ -3565,7 +3674,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (showVolume)
             {
                 if (ShowVPOC && session.VPOCLevel > 0)
-                    DrawLevelZone(chartScale, startX, endX, session.VPOCLevel * rowSize + rowSize * 0.5);
+                    DrawLevelZone(chartScale, startX, endX, PocPrice(session.VPOCLevel));
                 if (ShowVolumeValueArea)
                 {
                     if (session.VVAH > 0) DrawLevelZone(chartScale, startX, endX, session.VVAH * rowSize + rowSize);
@@ -3587,7 +3696,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (showTPO)
             {
                 if (ShowTPOPOC && session.POCLevel > 0)
-                    DrawLevelZone(chartScale, startX, endX, session.POCLevel * rowSize + rowSize * 0.5);
+                    DrawLevelZone(chartScale, startX, endX, PocPrice(session.POCLevel));
                 if (ShowTPOVAHVAL)
                 {
                     if (session.TPOVAH > 0) DrawLevelZone(chartScale, startX, endX, session.TPOVAH * rowSize + rowSize);
@@ -3607,7 +3716,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (SplitGlobexRthTPO)
                 {
                     if (ShowTPOPOC && session.GlobexPOCLevel > 0)
-                        DrawLevelZone(chartScale, startX, endX, session.GlobexPOCLevel * rowSize + rowSize * 0.5);
+                        DrawLevelZone(chartScale, startX, endX, PocPrice(session.GlobexPOCLevel));
                     if (ShowTPOVAHVAL)
                     {
                         if (session.GlobexTPOVAH > 0) DrawLevelZone(chartScale, startX, endX, session.GlobexTPOVAH * rowSize + rowSize);
@@ -4267,7 +4376,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void RenderVPOCLine(ChartScale chartScale, SessionProfile session, int startX, int endX)
         {
             // VPOC line at mid-row so it sits centred in the bar
-            double vpocPrice = session.VPOCLevel * rowSize + (rowSize * 0.5);
+            double vpocPrice = PocPrice(session.VPOCLevel);
             float  y         = chartScale.GetYByValue(vpocPrice);
             RenderTarget.DrawLine(
                 new SharpDX.Vector2(startX, y),
@@ -4301,7 +4410,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // VPOC price
             if (session.VPOCLevel > 0)
             {
-                double vpocPrice = session.VPOCLevel * rowSize + (rowSize * 0.5);
+                double vpocPrice = PocPrice(session.VPOCLevel);
                 RenderTarget.DrawText("VPOC: " + vpocPrice.ToString("F2"), statsFormat,
                     new SharpDX.RectangleF(panelX, y, 100, lineH), vpocBrush);
                 y += lineH;
@@ -4378,7 +4487,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             // TPO POC line
             if (ShowTPOPOC && session.POCLevel > 0 && tpoPocBrush != null && showTPOLevelLines)
             {
-                float pocY = chartScale.GetYByValue(session.POCLevel * rowSize + rowSize * 0.5f);
+                float pocY = chartScale.GetYByValue((float)PocPrice(session.POCLevel));
                 RenderTarget.DrawLine(new SharpDX.Vector2(startX, pocY), new SharpDX.Vector2(endX, pocY), tpoPocBrush, 2);
             }
 
@@ -4420,7 +4529,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (ShowTPOPOC && session.GlobexPOCLevel > 0 && tpoPocBrush != null)
                 {
-                    float y = chartScale.GetYByValue(session.GlobexPOCLevel * rowSize + rowSize * 0.5f);
+                    float y = chartScale.GetYByValue((float)PocPrice(session.GlobexPOCLevel));
                     RenderTarget.DrawLine(new SharpDX.Vector2(startX, y), new SharpDX.Vector2(endX, y), tpoPocBrush, 1.5f, dashStrokeStyle);
                 }
                 if (ShowTPOVAHVAL)
@@ -4759,7 +4868,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (price > 0)
                     list.Add(new STVPLevelRecord { Type = type, Price = price, SessionStart = s.StartTime, SessionEnd = s.EndTime, BreakTime = bt });
             };
-            if (s.VPOCLevel > 0) add("VPOC", s.VPOCLevel * rowSize + rowSize * 0.5, s.VPOCBreakTime);
+            if (s.VPOCLevel > 0) add("VPOC", PocPrice(s.VPOCLevel), s.VPOCBreakTime);
             if (s.VVAH > 0)      add("VVAH", s.VVAH * rowSize + rowSize,            s.VVAHBreakTime);
             if (s.VVAL > 0)      add("VVAL", s.VVAL * rowSize,                      s.VVALBreakTime);
             if (s.SessionHigh > 0 && s.SessionHigh != double.MinValue) add("HI", s.SessionHigh, s.HighBreakTime);
