@@ -1803,7 +1803,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 CheckNakedLevelTests(tickPrice, tickTime);
 
             // --- Live support/resistance role tracking on prior-session and naked levels ---
-            if (ShowLevelRoles)
+            // Only feed the state machine ticks that fall inside the chart's trading-hours
+            // template session (lastKeyBegin/lastKeyEnd come from the primary series'
+            // SessionIterator in GetSessionKey above). A tick outside that window (e.g.
+            // Globex when the chart runs an RTH template) never reaches the machine, so
+            // roles freeze at the template close and resume at the next template open.
+            if (ShowLevelRoles && tickTime >= lastKeyBegin && tickTime <= lastKeyEnd)
                 UpdateLevelRoles(tickPrice, tickTime);
 
             // --- TPO letter construction ---
