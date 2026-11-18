@@ -1803,19 +1803,25 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentSession.RTHLow = tickPrice;
             }
 
-            // --- Naked level testing against prior sessions ---
-            if (ShowNakedVPOC || ShowPriorSessionVPOC || ShowNakedVAHVAL || ShowPriorSessionLevels
+            // --- Naked level testing + live support/resistance role tracking ---
+            // Both S/R update paths follow the same hours the profiles do: only ticks
+            // inside the chart's trading-hours template session (lastKeyBegin/
+            // lastKeyEnd from GetSessionKey) AND inside the RTH window resolved by
+            // RTH Mode (Auto per contract / Manual / Full Session) reach them. With
+            // RTH Mode = Auto on a Globex product this freezes every prior-session and
+            // naked level line test and role during the overnight session; everything
+            // resumes at RTH Start. Use Full Session (or an RTH-only template with
+            // Auto) to classify all hours the template trades.
+            bool srUpdateWindow = tickTime >= lastKeyBegin && tickTime <= lastKeyEnd
+                && IsRthAt(tickTime);
+
+            if (srUpdateWindow
+                && (ShowNakedVPOC || ShowPriorSessionVPOC || ShowNakedVAHVAL || ShowPriorSessionLevels
                 || ShowNakedTPOPOC || ShowPriorSessionTPOPOC || ShowNakedTPOVAHVAL || ShowPriorSessionTPOVAHVAL
-                || ShowNakedTPOSD2 || ShowNakedTPOSD3 || ShowNakedSinglePrints)
+                || ShowNakedTPOSD2 || ShowNakedTPOSD3 || ShowNakedSinglePrints))
                 CheckNakedLevelTests(tickPrice, tickTime);
 
-            // --- Live support/resistance role tracking on prior-session and naked levels ---
-            // Only feed the state machine ticks that fall inside the chart's trading-hours
-            // template session (lastKeyBegin/lastKeyEnd come from the primary series'
-            // SessionIterator in GetSessionKey above). A tick outside that window (e.g.
-            // Globex when the chart runs an RTH template) never reaches the machine, so
-            // roles freeze at the template close and resume at the next template open.
-            if (ShowLevelRoles && tickTime >= lastKeyBegin && tickTime <= lastKeyEnd)
+            if (ShowLevelRoles && srUpdateWindow)
                 UpdateLevelRoles(tickPrice, tickTime, upVol, downVol);
 
             // --- TPO letter construction ---
