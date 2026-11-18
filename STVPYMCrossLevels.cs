@@ -64,6 +64,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private System.Windows.Media.Brush builtFromRoleResistance;
         private System.Windows.Media.Brush builtFromRoleOther;
 
+        private int    diagDrawn, diagOff, diagSpan, diagOld, diagUnknown;
+        private string diagOffSample = "";
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -76,8 +79,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 DrawOnPricePanel            = true;
                 PaintPriceMarkers           = false;
                 IsSuspendedWhileInactive    = false;
-                IsAutoScale                 = false;
+                IsAutoScale                 = true;
                 BarsRequiredToPlot          = 1;
+
+                // Two invisible plots carry the highest/lowest converted level so the YM
+                // panel's auto-scale expands enough to show every mirrored level.
+                AddPlot(System.Windows.Media.Brushes.Transparent, PlotStyle.Line);
+                AddPlot(System.Windows.Media.Brushes.Transparent, PlotStyle.Line);
 
                 SourceFilter                = "ES";
                 RatioMode                   = STVPYMRatioMode.AutoFit;
@@ -85,6 +93,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 MaxAgeSeconds               = 0;      // 0 = never hide stale levels
                 ShowBrokenLevels            = true;   // draw levels the source chart has already tested
                 ShowRoleTags                = true;
+                IncludeLevelsInScale        = true;
                 ShowLabels                  = true;
                 LineWidth                   = 2;
                 LabelFontSize               = 9;
@@ -148,17 +157,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                          + " es=" + r0.Price.ToString("F2")
                          + " ym=" + (r0.Price * probeRatio).ToString("F2")
                          + " bars " + bStart + ".." + bEnd
-                         + " of " + (ChartBars.Count - 1).ToString();
-                    if (chartScale != null)
-                    {
-                        float yPx  = chartScale.GetYByValue(r0.Price * probeRatio);
-                        float xSPx = chartControl.GetXByBarIndex(ChartBars, bStart);
-                        float xEPx = chartControl.GetXByBarIndex(ChartBars, Math.Min(bEnd, ChartBars.Count - 1));
-                        msg += " px[y=" + yPx.ToString("F0") + " xs=" + xSPx.ToString("F0") + " xe=" + xEPx.ToString("F0")
-                             + " canvas=" + RenderTarget.Size.Width.ToString("F0") + "x" + RenderTarget.Size.Height.ToString("F0") + "]";
-                    }
-                    msg += "]";
+                         + " of " + (ChartBars.Count - 1).ToString() + "]";
                 }
+                msg += "  drawn=" + diagDrawn.ToString()
+                     + "  offScreen=" + diagOff.ToString()
+                     + "  skipSpan=" + diagSpan.ToString()
+                     + "  skipOld=" + diagOld.ToString()
+                     + "  skipUnknown=" + diagUnknown.ToString();
+                if (diagOffSample.Length > 0)
+                    msg += "  OFF[" + diagOffSample + " ]";
                 Print(msg);
             }
 
@@ -237,9 +244,26 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     SharpDX.Direct2D1.Brush roleB = RoleBrushFor(rec.RoleText);
                     RenderTarget.DrawText(rec.RoleText, labelFormat,
-                        new SharpDX.RectangleF(xEnd + 6, y + 2, 170, labelFormat.FontSize + 4), roleB);
+                        new SharpDX.RectangleF(xEnd + 6, y + 2, 190, labelFormat.FontSize + 4), roleB);
                 }
             }
+
+            if (CurrentBar >= 0)
+            {
+                if (IncludeLevelsInScale)
+                {
+                    Values[0][0] = scaleHi != double.MinValue ? scaleHi : Close[0];
+                    Values[1][0] = scaleLo != double.MaxValue ? scaleLo : Close[0];
+                }
+                else
+                {
+                    Values[0][0] = double.NaN;
+                    Values[1][0] = double.NaN;
+                }
+            }
+
+            diagDrawn = drawN; diagOff = off; diagSpan = skipSpan;
+            diagOld = skipOld; diagUnknown = skipUnknown; diagOffSample = offSample;
         }
 
         private double ResolveRatio(double esLastPrice)
@@ -430,8 +454,14 @@ namespace NinjaTrader.NinjaScript.Indicators
         public int LineWidth { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Labels", Description = "Draw the level type and converted YM price at the right end of each line", Order = 2, GroupName = "3. Appearance")]
+        [Display(Name = "Show Labels", Description = "Draw the level type, converted YM price and source ES price at the right end of each line", Order = 2, GroupName = "3. Appearance")]
         public bool ShowLabels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Include Levels in Scale",
+                 Description = "Expand the chart's price scale so every mirrored level is on-screen (invisible anchor plots). Off leaves the scale fitted to candles only.",
+                 Order = 2, GroupName = "2. Conversion")]
+        public bool IncludeLevelsInScale { get; set; }
 
         [NinjaScriptProperty]
         [Range(6, 40)]
