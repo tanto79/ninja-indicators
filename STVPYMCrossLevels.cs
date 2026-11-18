@@ -84,8 +84,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 // Two invisible plots carry the highest/lowest converted level so the YM
                 // panel's auto-scale expands enough to show every mirrored level.
-                AddPlot(new Stroke(System.Windows.Media.Brushes.Transparent, 1), PlotStyle.Line);
-                AddPlot(new Stroke(System.Windows.Media.Brushes.Transparent, 1), PlotStyle.Line);
+                // NT8 has no 2-arg (Stroke, PlotStyle) overload - the Stroke overload
+                // also requires a unique plot name: AddPlot(Stroke, PlotStyle, string).
+                AddPlot(new Stroke(System.Windows.Media.Brushes.Transparent, 1), PlotStyle.Line, "STVPYMScaleHi");
+                AddPlot(new Stroke(System.Windows.Media.Brushes.Transparent, 1), PlotStyle.Line, "STVPYMScaleLo");
 
                 SourceFilter                = "ES";
                 RatioMode                   = STVPYMRatioMode.AutoFit;
