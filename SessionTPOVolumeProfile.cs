@@ -2841,6 +2841,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     break;
             }
 
+            int sep = key.IndexOf('|');
+            PublishLevelRole(sep >= 0 ? key.Substring(sep + 1) : key, price, tag, st.Role);
+
             float y = chartScale.GetYByValue(price);
             RenderTarget.DrawText(tag, statsFormat,
                 new SharpDX.RectangleF(lineEndX - 174, y + 8, 170, 14), brush);
@@ -4702,6 +4705,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         public class STVPLevelRecord
         {
             public string   Type;          // VPOC, VVAH, VVAL, HI, LO, SPL, SPH
+            public string   CanonType;     // bare tracker type (optional, set by the YMCross publisher)
+            public string   RoleText;      // live support/resistance tag (optional, set by the YMCross publisher)
+            public int      RoleDir;       // +1 support, -1 resistance, 0 none/unknown
             public double   Price;
             public DateTime SessionStart;
             public DateTime SessionEnd;
@@ -4885,9 +4891,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             string type = label ?? "";
             int sp = type.LastIndexOf(' ');
             if (sp > 0) type = type.Substring(0, sp);
+            string canon = type.TrimStart('p', 'n', 'r', ' ');
+            if (canon == "POC")      canon = "TPOPOC";
+            else if (canon == "VAH") canon = "TPOVAH";
+            else if (canon == "VAL") canon = "TPOVAL";
             var rec = new STVPLevelRecord
             {
                 Type         = type,
+                CanonType    = canon,
                 Price        = price,
                 SessionStart = renderedSessionStart,
                 SessionEnd   = renderedSessionEnd,
@@ -4899,6 +4910,29 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ymPublishedInstrument = Instrument != null ? Instrument.MasterInstrument.Name : "";
                 if (lastTickPrice > 0) ymPublishedLastPrice = lastTickPrice;
                 ymPublishedAt = DateTime.UtcNow;
+            }
+        }
+
+        /// <summary>
+        /// Attaches the live support/resistance tag of a tracked level to its published
+        /// record (matched by canonical type + price). Called from DrawLevelRoleTag, which
+        /// runs right after the line itself is published in the same render pass.
+        /// </summary>
+        private void PublishLevelRole(string canonType, double price, string roleText, int roleDir)
+        {
+            if (canonType == null || roleText == null) return;
+            lock (ymPublishLock)
+            {
+                for (int i = ymPublishedLevels.Count - 1; i >= 0; i--)
+                {
+                    STVPLevelRecord r = ymPublishedLevels[i];
+                    if (r.CanonType == canonType && Math.Abs(r.Price - price) < 1e-8)
+                    {
+                        r.RoleText = roleText;
+                        r.RoleDir  = roleDir;
+                        return;
+                    }
+                }
             }
         }
 

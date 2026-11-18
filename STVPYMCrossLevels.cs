@@ -57,6 +57,13 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         private DateTime lastDiagAt = DateTime.MinValue;
 
+        private SharpDX.Direct2D1.SolidColorBrush roleSupportBrush;
+        private SharpDX.Direct2D1.SolidColorBrush roleResistanceBrush;
+        private SharpDX.Direct2D1.SolidColorBrush roleOtherBrush;
+        private System.Windows.Media.Brush builtFromRoleSupport;
+        private System.Windows.Media.Brush builtFromRoleResistance;
+        private System.Windows.Media.Brush builtFromRoleOther;
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -77,6 +84,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 FixedRatio                  = 10.0;
                 MaxAgeSeconds               = 0;      // 0 = never hide stale levels
                 ShowBrokenLevels            = true;   // draw levels the source chart has already tested
+                ShowRoleTags                = true;
                 ShowLabels                  = true;
                 LineWidth                   = 2;
                 LabelFontSize               = 9;
@@ -86,6 +94,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 VaColor         = System.Windows.Media.Brushes.MediumOrchid;
                 TpoColor        = System.Windows.Media.Brushes.Magenta;
                 SinglePrintColor= System.Windows.Media.Brushes.Orange;
+                RoleSupportColor    = System.Windows.Media.Brushes.LimeGreen;
+                RoleResistanceColor = System.Windows.Media.Brushes.Red;
+                RoleOtherColor      = System.Windows.Media.Brushes.Gold;
                 TextColor       = System.Windows.Media.Brushes.White;
             }
             else if (State == State.Terminated)
@@ -120,7 +131,10 @@ namespace NinjaTrader.NinjaScript.Indicators
                     + "  visible=" + ((probe == null) ? "rejected" : probe.Count.ToString())
                     + "  ageSec=" + ((pubAt == DateTime.MinValue) ? "n/a" : (DateTime.UtcNow - pubAt).TotalSeconds.ToString("F1"))
                     + "  input=" + (Instrument != null ? Instrument.FullName : "null")
+                    + "  close0Series=" + (Bars != null && Bars.Instrument != null ? Bars.Instrument.FullName : "null")
                     + "  Close[0]=" + Close[0].ToString("F2")
+                    + "  hostPanelSeries=" + (ChartBars != null && ChartBars.Bars != null && ChartBars.Bars.Instrument != null ? ChartBars.Bars.Instrument.FullName : "null")
+                    + "  hostPanelLast=" + ((ChartBars != null && ChartBars.Bars != null && ChartBars.Bars.Count > 1) ? ChartBars.Bars.GetClose(ChartBars.Bars.Count - 1).ToString("F2") : "n/a")
                     + "  esLast=" + pubLast.ToString("F2")
                     + "  ratio=" + probeRatio.ToString("F4")
                     + "  barsLast=" + Bars.GetClose(Bars.Count - 1).ToString("F2")
@@ -190,12 +204,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                                       new SharpDX.Vector2(xEnd, y),
                                       brush, Math.Max(1, LineWidth), dashStroke);
 
+                SharpDX.Direct2D1.Brush textB = textBrush != null ? textBrush : brush;
                 if (ShowLabels)
                 {
                     string tag = rec.Type + " " + ymPrice.ToString(fmt);
-                    SharpDX.Direct2D1.Brush textB = textBrush != null ? textBrush : brush;
                     RenderTarget.DrawText(tag, labelFormat,
                         new SharpDX.RectangleF(xEnd + 6, y - labelFormat.FontSize - 2, 140, labelFormat.FontSize + 4), textB);
+                }
+                if (ShowRoleTags && rec.RoleText != null)
+                {
+                    SharpDX.Direct2D1.Brush roleB = RoleBrushFor(rec.RoleText);
+                    RenderTarget.DrawText(rec.RoleText, labelFormat,
+                        new SharpDX.RectangleF(xEnd + 6, y + 2, 170, labelFormat.FontSize + 4), roleB);
                 }
             }
         }
@@ -205,7 +225,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (RatioMode == STVPYMRatioMode.Fixed)
                 return FixedRatio > 0 ? FixedRatio : 0;
 
-            double ymLast = Close[0];
+            double ymLast = 0;
+            if (ChartBars != null && ChartBars.Bars != null && ChartBars.Bars.Count > 1)
+                ymLast = ChartBars.Bars.GetClose(ChartBars.Bars.Count - 1);
+            if (ymLast <= 0)
+                ymLast = Close[0];
             if (esLastPrice > 0 && ymLast > 0)
             {
                 double r = ymLast / esLastPrice;
@@ -223,6 +247,14 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (t.Contains("POC"))  return vpocBrush;
             if (t.Contains("VAH") || t.Contains("VAL")) return vaBrush;
             if (t.Contains("HI")  || t.Contains("LO"))  return hiLoBrush;
+            return textBrush;
+        }
+
+        private SharpDX.Direct2D1.Brush RoleBrushFor(string roleText)
+        {
+            if (roleText.Contains("BREAKING") || roleText.Contains("testing")) return roleOtherBrush;
+            if (roleText.StartsWith("Support",    StringComparison.Ordinal)) return roleSupportBrush;
+            if (roleText.StartsWith("Resistance", StringComparison.Ordinal)) return roleResistanceBrush;
             return textBrush;
         }
 
@@ -248,7 +280,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (dashStroke != null
                 && builtFromHiLo == HighLowColor && builtFromVpoc == VpocColor
                 && builtFromVa == VaColor && builtFromTpo == TpoColor
-                && builtFromSp == SinglePrintColor && builtFromText == TextColor)
+                && builtFromSp == SinglePrintColor && builtFromText == TextColor
+                && builtFromRoleSupport == RoleSupportColor
+                && builtFromRoleResistance == RoleResistanceColor
+                && builtFromRoleOther == RoleOtherColor)
                 return;
 
             DisposeResources();
@@ -259,6 +294,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             tpoBrush  = DxBrush(TpoColor);          builtFromTpo  = TpoColor;
             spBrush   = DxBrush(SinglePrintColor);  builtFromSp   = SinglePrintColor;
             textBrush = DxBrush(TextColor);         builtFromText = TextColor;
+
+            roleSupportBrush    = DxBrush(RoleSupportColor);    builtFromRoleSupport    = RoleSupportColor;
+            roleResistanceBrush = DxBrush(RoleResistanceColor); builtFromRoleResistance = RoleResistanceColor;
+            roleOtherBrush      = DxBrush(RoleOtherColor);      builtFromRoleOther      = RoleOtherColor;
 
             labelFormat = new SharpDX.DirectWrite.TextFormat(
                 NinjaTrader.Core.Globals.DirectWriteFactory, "Consolas", Math.Max(6, LabelFontSize));
@@ -276,6 +315,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (tpoBrush    != null) { tpoBrush.Dispose();    tpoBrush    = null; }
             if (spBrush     != null) { spBrush.Dispose();     spBrush     = null; }
             if (textBrush   != null) { textBrush.Dispose();   textBrush   = null; }
+            if (roleSupportBrush    != null) { roleSupportBrush.Dispose();    roleSupportBrush    = null; }
+            if (roleResistanceBrush != null) { roleResistanceBrush.Dispose(); roleResistanceBrush = null; }
+            if (roleOtherBrush      != null) { roleOtherBrush.Dispose();      roleOtherBrush      = null; }
             if (labelFormat != null) { labelFormat.Dispose(); labelFormat = null; }
             if (dashStroke  != null) { dashStroke.Dispose();  dashStroke  = null; }
         }
@@ -308,6 +350,36 @@ namespace NinjaTrader.NinjaScript.Indicators
                  Description = "Print publish/read state to the NinjaScript Output window (New > NinjaScript Output) every 2 seconds for troubleshooting.",
                  Order = 4, GroupName = "1. Source")]
         public bool Diagnostics { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Role Tags",
+                 Description = "Draw the live support/resistance tag (untested / testing / held / breaking / flipped) under each mirrored level, matching the ES panel.",
+                 Order = 5, GroupName = "1. Source")]
+        public bool ShowRoleTags { get; set; }
+
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Role Support Color", Description = "Color for tags in the support role", Order = 6, GroupName = "1. Source")]
+        public System.Windows.Media.Brush RoleSupportColor { get; set; }
+        [Browsable(false)]
+        public string RoleSupportColorSerialize
+        { get { return Serialize.BrushToString(RoleSupportColor); } set { RoleSupportColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Role Resistance Color", Description = "Color for tags in the resistance role", Order = 7, GroupName = "1. Source")]
+        public System.Windows.Media.Brush RoleResistanceColor { get; set; }
+        [Browsable(false)]
+        public string RoleResistanceColorSerialize
+        { get { return Serialize.BrushToString(RoleResistanceColor); } set { RoleResistanceColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Role Testing/Breaking Color", Description = "Color for tags while a test or break is in progress", Order = 8, GroupName = "1. Source")]
+        public System.Windows.Media.Brush RoleOtherColor { get; set; }
+        [Browsable(false)]
+        public string RoleOtherColorSerialize
+        { get { return Serialize.BrushToString(RoleOtherColor); } set { RoleOtherColor = Serialize.StringToBrush(value); } }
 
         #endregion
 
