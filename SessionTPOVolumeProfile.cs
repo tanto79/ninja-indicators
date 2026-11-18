@@ -339,7 +339,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush roleBreakingBrush;       // level role: testing/breaking tag
         private SharpDX.Direct2D1.Brush roleUntestedBrush;       // level role: untested tag
         private readonly Dictionary<string, LevelRoleState> levelRoleStates = new Dictionary<string, LevelRoleState>();
-        private DateTime roleLastTickTime = DateTime.MinValue;
+        private DateTime roleLastTickTime       = DateTime.MinValue;
+        private DateTime roleLastTickSessionKey = DateTime.MinValue;
         private readonly List<RoleTracker> roleTrackers = new List<RoleTracker>();
         private int            roleTrackerSessionCount = -1;
         private SessionProfile roleTrackerMostRecent;
@@ -769,7 +770,7 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         [NinjaScriptProperty]
         [Range(1, 1000)]
-        [Display(Name = "Role Touch Tolerance Ticks", Description = "Ticks around each level that count as testing the level (default 8)", Order = 3, GroupName = "3B. Level Roles")]
+        [Display(Name = "Role Touch Tolerance Ticks", Description = "Ticks around each level that count as touching it — used identically by the role classifier and naked-level termination (default 8)", Order = 3, GroupName = "3B. Level Roles")]
         public int LevelRoleTouchToleranceTicks { get; set; }
 
         [NinjaScriptProperty]
@@ -2422,27 +2423,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // VPOC test
                 if (!s.VPOCTested && s.VPOCLevel > 0)
                 {
-                    double lo = s.VPOCLevel * rowSize;
-                    double hi = lo + rowSize;
-                    if (price >= lo && price <= hi)
+                    if (IsLevelTouched(price, s.VPOCLevel * rowSize + rowSize * 0.5))
                         { s.VPOCTested = true; s.VPOCBreakTime = breakTime; }
                 }
 
                 // VVAH test
                 if (!s.VVAHTested && s.VVAH > 0)
                 {
-                    double lo = s.VVAH * rowSize;
-                    double hi = lo + rowSize;
-                    if (price >= lo && price <= hi)
+                    if (IsLevelTouched(price, s.VVAH * rowSize + rowSize))
                         { s.VVAHTested = true; s.VVAHBreakTime = breakTime; }
                 }
 
                 // VVAL test
                 if (!s.VVALTested && s.VVAL > 0)
                 {
-                    double lo = s.VVAL * rowSize;
-                    double hi = lo + rowSize;
-                    if (price >= lo && price <= hi)
+                    if (IsLevelTouched(price, s.VVAL * rowSize))
                         { s.VVALTested = true; s.VVALBreakTime = breakTime; }
                 }
 
@@ -2485,18 +2480,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Session high test
                 if (!s.HighTested && s.HighLevel > 0)
                 {
-                    double lo = s.HighLevel * rowSize;
-                    double hi = lo + rowSize;
-                    if (price >= lo && price <= hi)
+                    if (IsLevelTouched(price, s.SessionHigh))
                         { s.HighTested = true; s.HighBreakTime = breakTime; }
                 }
 
                 // Session low test
                 if (!s.LowTested && s.LowLevel > 0)
                 {
-                    double lo = s.LowLevel * rowSize;
-                    double hi = lo + rowSize;
-                    if (price >= lo && price <= hi)
+                    if (IsLevelTouched(price, s.SessionLow))
                         { s.LowTested = true; s.LowBreakTime = breakTime; }
                 }
 
@@ -2504,20 +2495,17 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 if (!s.TPOPOCTested && s.POCLevel > 0)
                 {
-                    double lo = s.POCLevel * rowSize;
-                    if (price >= lo && price <= lo + rowSize)
+                    if (IsLevelTouched(price, s.POCLevel * rowSize + rowSize * 0.5))
                         { s.TPOPOCTested = true; s.TPOPOCBreakTime = breakTime; }
                 }
                 if (!s.TPOVAHTested && s.TPOVAH > 0)
                 {
-                    double lo = s.TPOVAH * rowSize;
-                    if (price >= lo && price <= lo + rowSize)
+                    if (IsLevelTouched(price, s.TPOVAH * rowSize + rowSize))
                         { s.TPOVAHTested = true; s.TPOVAHBreakTime = breakTime; }
                 }
                 if (!s.TPOVALTested && s.TPOVAL > 0)
                 {
-                    double lo = s.TPOVAL * rowSize;
-                    if (price >= lo && price <= lo + rowSize)
+                    if (IsLevelTouched(price, s.TPOVAL * rowSize))
                         { s.TPOVALTested = true; s.TPOVALBreakTime = breakTime; }
                 }
                 if (!s.TPOSD2HTested && s.TPOSD2H > 0)
@@ -2578,7 +2566,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int      Touches;
             public int      Helds;
             public int      BreakDir;     // direction of the running break attempt: +1 up, -1 down, 0 = none
-            public DateTime BreakStart;   // tick-time the current run beyond the level began
+            public double   BreakElapsed; // traded seconds in the current break run (template-session gaps excluded)
         }
 
         private class RoleTracker
@@ -2591,12 +2579,28 @@ namespace NinjaTrader.NinjaScript.Indicators
         { return s.StartTime.Ticks.ToString() + "|" + type; }
 
         /// <summary>
+        /// The one touch definition shared by naked-level termination and the role
+        /// classifier: within Role Touch Tolerance Ticks of the exact drawn line
+        /// price. A level can never end as “tested” while the classifier still
+        /// shows it untested, or the reverse.
+        /// </summary>
+        private bool IsLevelTouched(double price, double linePrice)
+        {
+            double ts  = rowSize / Math.Max(1, TicksPerRow);
+            double tol = Math.Max(1, LevelRoleTouchToleranceTicks) * ts;
+            return Math.Abs(price - linePrice) <= tol;
+        }
+
+        /// <summary>
         /// Drives the per-level support/resistance state machine from the tick stream.
         /// Roles are positional (price above a level = support, below = resistance) and
         /// are confirmed by tick interactions: tests in the tolerance band, completed
         /// rejections (held) and breaks that hold beyond the level for
-        /// LevelRoleAcceptSeconds (flip). All timing uses tick timestamps, so behavior is
-        /// identical on any chart bar size and rebuilds during the historical replay.
+        /// LevelRoleAcceptSeconds of traded time (flip). All timing uses tick timestamps,
+        /// so behavior is identical on any chart bar size and rebuilds during the
+        /// historical replay. Only traded time inside the chart's template session
+        /// accrues — frozen gaps (overnight, closed template windows) never count
+        /// toward a break.
         /// Per-tick execution is allocation-free: tracked levels are cached and the
         /// cache is rebuilt only when the session set or visibility toggles change.
         /// </summary>
@@ -2604,7 +2608,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (currentSession == null || sessions == null || sessions.Count < 2) return;
 
-            roleLastTickTime = tickTime;
+            // Traded seconds since the previous tick: the acceptance timer runs on
+            // this, so gap time (overnight, closed template windows) never completes
+            // a break — a run resumed after a frozen gap keeps its banked elapsed
+            // and only traded time inside the template session accrues.
+            double tradedDelta = 0;
+            if (roleLastTickTime != DateTime.MinValue && roleLastTickTime < tickTime
+                && roleLastTickSessionKey == lastKeyBegin)
+                tradedDelta = (tickTime - roleLastTickTime).TotalSeconds;
+            roleLastTickTime       = tickTime;
+            roleLastTickSessionKey = lastKeyBegin;
 
             bool cacheValid =
                 roleTrackerSessionCount == sessions.Count
@@ -2629,7 +2642,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             for (int i = 0; i < roleTrackers.Count; i++)
             {
                 RoleTracker t = roleTrackers[i];
-                RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol);
+                RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol, tradedDelta);
             }
         }
 
@@ -2704,7 +2717,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         private void RunLevelRoleMachine(LevelRoleState st, double level, double tickPrice,
-            DateTime tickTime, double tol)
+            DateTime tickTime, double tol, double tradedDelta)
         {
             double d  = tickPrice - level;
             double ad = Math.Abs(d);
@@ -2714,6 +2727,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ad <= tol)
             {
                 st.BreakDir = 0;
+                st.BreakElapsed = 0;
                 if (st.State == LRState.Breaking)
                     st.State = LRState.Testing;
                 if (!st.InBand)
@@ -2739,6 +2753,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     st.Helds++;
                     st.Role          = side;
                     st.BreakDir      = 0;
+                    st.BreakElapsed  = 0;
                     st.PendingReject = false;
                 }
                 else if (st.PendingReject)
@@ -2764,6 +2779,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     // decisive return to the role side before acceptance = failed break
                     st.Helds++;
                     st.BreakDir      = 0;
+                    st.BreakElapsed  = 0;
                     st.PendingReject = false;
                 }
                 else if (st.PendingReject)
@@ -2780,14 +2796,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // (re)start the acceptance clock when the run changes
                 if (st.BreakDir != side)
                 {
-                    st.BreakDir   = side;
-                    st.BreakStart = tickTime;
+                    st.BreakDir     = side;
+                    st.BreakElapsed = 0;
                 }
-                if ((tickTime - st.BreakStart).TotalSeconds >= LevelRoleAcceptSeconds)
+                else
+                    st.BreakElapsed += tradedDelta;
+                if (st.BreakElapsed >= LevelRoleAcceptSeconds)
                 {
                     st.State         = LRState.Flipped;
                     st.Role          = side;
                     st.BreakDir      = 0;
+                    st.BreakElapsed  = 0;
                     st.PendingReject = false;
                 }
                 else
@@ -2839,8 +2858,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     tag   = roleWord + " · flipped";
                     break;
                 default: // Breaking
-                    int elapsed = roleLastTickTime > st.BreakStart
-                        ? (int)(roleLastTickTime - st.BreakStart).TotalSeconds : 0;
+                    int elapsed = (int)st.BreakElapsed;
                     brush = roleBreakingBrush;
                     tag   = roleWord + " · BREAKING " + elapsed.ToString() + "s";
                     break;
