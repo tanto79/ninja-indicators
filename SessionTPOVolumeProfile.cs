@@ -340,6 +340,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush roleUntestedBrush;       // level role: untested tag
         private readonly Dictionary<string, LevelRoleState> levelRoleStates = new Dictionary<string, LevelRoleState>();
         private DateTime roleLastTickTime = DateTime.MinValue;
+        private readonly List<RoleTracker> roleTrackers = new List<RoleTracker>();
+        private int            roleTrackerSessionCount = -1;
+        private SessionProfile roleTrackerMostRecent;
+        private DateTime       roleTrackerCurrentStart = DateTime.MinValue;
+        private bool           roleTrackerPriorHiLo;
+        private bool           roleTrackerPriorVPOC;
+        private bool           roleTrackerNakedVPOC;
+        private bool           roleTrackerNakedVA;
+        private bool           roleTrackerNakedTPOPoc;
+        private bool           roleTrackerNakedTPOVA;
         private SharpDX.Direct2D1.Brush nakedVpocBrush;
         private SharpDX.Direct2D1.Brush nakedVABrush;      // prior/naked VVAL
         private SharpDX.Direct2D1.Brush nakedVAHBrush;     // prior/naked VVAH
@@ -2515,6 +2525,13 @@ namespace NinjaTrader.NinjaScript.Indicators
             public DateTime BreakStart;   // tick-time the current run beyond the level began
         }
 
+        private class RoleTracker
+        {
+            public LevelRoleState State;
+            public double         Level;
+            public DateTime       BreakTime;
+        }
+
         private string RoleKey(SessionProfile s, string type)
         { return s.StartTime.Ticks.ToString() + "|" + type; }
 
@@ -2525,14 +2542,44 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// rejections (held) and breaks that hold beyond the level for
         /// LevelRoleAcceptSeconds (flip). All timing uses tick timestamps, so behavior is
         /// identical on any chart bar size and rebuilds during the historical replay.
+        /// Per-tick execution is allocation-free: tracked levels are cached and the
+        /// cache is rebuilt only when the session set or visibility toggles change.
         /// </summary>
         private void UpdateLevelRoles(double tickPrice, DateTime tickTime)
         {
             if (currentSession == null || sessions == null || sessions.Count < 2) return;
 
             roleLastTickTime = tickTime;
+
+            bool cacheValid =
+                roleTrackerSessionCount == sessions.Count
+                && roleTrackerMostRecent == mostRecentCompletedSession
+                && roleTrackerCurrentStart == currentSession.StartTime
+                && roleTrackerPriorHiLo == ShowPriorSessionLevels
+                && roleTrackerPriorVPOC == ShowPriorSessionVPOC
+                && roleTrackerNakedVPOC == ShowNakedVPOC
+                && roleTrackerNakedVA == ShowNakedVAHVAL
+                && roleTrackerNakedTPOPoc == ShowNakedTPOPOC
+                && roleTrackerNakedTPOVA == ShowNakedTPOVAHVAL;
+
+            if (!cacheValid)
+                RebuildRoleTrackers();
+
             double ts  = rowSize / Math.Max(1, TicksPerRow);
             double tol = Math.Max(1, LevelRoleTouchToleranceTicks) * ts;
+
+            for (int i = 0; i < roleTrackers.Count; i++)
+            {
+                RoleTracker t = roleTrackers[i];
+                if (t.BreakTime != DateTime.MinValue && t.BreakTime < currentSession.StartTime)
+                    continue;
+                RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol);
+            }
+        }
+
+        private void RebuildRoleTrackers()
+        {
+            roleTrackers.Clear();
 
             // Mirrors the visibility rules used when each extension line is drawn.
             for (int i = 0; i < sessions.Count - 1; i++)
@@ -2541,30 +2588,45 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (s.VolumeAtPrice.Count == 0) continue;
                 bool isMostRecent = (s == mostRecentCompletedSession);
 
-                if (ShowPriorSessionLevels && s.HighLevel > 0)
-                    UpdateLevelRoleState(RoleKey(s, "HI"), s.SessionHigh, tickPrice, tickTime, tol);
-                if (ShowPriorSessionLevels && s.LowLevel > 0)
-                    UpdateLevelRoleState(RoleKey(s, "LO"), s.SessionLow, tickPrice, tickTime, tol);
+                if (ShowPriorSessionLevels)
+                {
+                    if (s.HighLevel > 0)
+                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh, s.HighBreakTime);
+                    if (s.LowLevel > 0)
+                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow, s.LowBreakTime);
+                }
 
                 if ((isMostRecent ? ShowPriorSessionVPOC : ShowNakedVPOC) && s.VPOCLevel > 0)
-                    UpdateLevelRoleState(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5, tickPrice, tickTime, tol);
+                    AddRoleTracker(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5, s.VPOCBreakTime);
 
-                if (ShowNakedVAHVAL && s.VVAH > 0)
-                    UpdateLevelRoleState(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, tickPrice, tickTime, tol);
-                if (ShowNakedVAHVAL && s.VVAL > 0)
-                    UpdateLevelRoleState(RoleKey(s, "VVAL"), s.VVAL * rowSize, tickPrice, tickTime, tol);
+                if (ShowNakedVAHVAL)
+                {
+                    if (s.VVAH > 0)
+                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, s.VVAHBreakTime);
+                    if (s.VVAL > 0)
+                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize, s.VVALBreakTime);
+                }
 
                 if (ShowNakedTPOPOC && s.POCLevel > 0)
-                    UpdateLevelRoleState(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5, tickPrice, tickTime, tol);
+                    AddRoleTracker(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5, s.TPOPOCBreakTime);
                 if (ShowNakedTPOVAHVAL && s.TPOVAH > 0)
-                    UpdateLevelRoleState(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize, tickPrice, tickTime, tol);
+                    AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize, s.TPOVAHBreakTime);
                 if (ShowNakedTPOVAHVAL && s.TPOVAL > 0)
-                    UpdateLevelRoleState(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize, tickPrice, tickTime, tol);
+                    AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize, s.TPOVALBreakTime);
             }
+
+            roleTrackerSessionCount = sessions.Count;
+            roleTrackerMostRecent   = mostRecentCompletedSession;
+            roleTrackerCurrentStart = currentSession.StartTime;
+            roleTrackerPriorHiLo    = ShowPriorSessionLevels;
+            roleTrackerPriorVPOC    = ShowPriorSessionVPOC;
+            roleTrackerNakedVPOC    = ShowNakedVPOC;
+            roleTrackerNakedVA      = ShowNakedVAHVAL;
+            roleTrackerNakedTPOPoc  = ShowNakedTPOPOC;
+            roleTrackerNakedTPOVA   = ShowNakedTPOVAHVAL;
         }
 
-        private void UpdateLevelRoleState(string key, double level, double tickPrice,
-            DateTime tickTime, double tol)
+        private void AddRoleTracker(string key, double level, DateTime breakTime)
         {
             LevelRoleState st;
             if (!levelRoleStates.TryGetValue(key, out st) || st == null)
@@ -2573,6 +2635,16 @@ namespace NinjaTrader.NinjaScript.Indicators
                 levelRoleStates[key] = st;
             }
 
+            RoleTracker t = new RoleTracker();
+            t.State     = st;
+            t.Level     = level;
+            t.BreakTime = breakTime;
+            roleTrackers.Add(t);
+        }
+
+        private void RunLevelRoleMachine(LevelRoleState st, double level, double tickPrice,
+            DateTime tickTime, double tol)
+        {
             double d  = tickPrice - level;
             double ad = Math.Abs(d);
 
