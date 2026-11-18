@@ -142,8 +142,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (probe != null && probe.Count > 0)
                 {
                     SessionTPOVolumeProfile.STVPLevelRecord r0 = probe[probe.Count - 1];
-                    int bStart = Bars.GetBar(r0.SessionStart);
-                    int bEnd   = Bars.GetBar(r0.SessionEnd);
+                    int bStart = Bars.GetBar(r0.SessionEnd);
+                    int bEnd   = r0.BreakTime != DateTime.MinValue ? Bars.GetBar(r0.BreakTime) : ChartBars.Count - 1;
                     msg += "  lastRec=[type=" + r0.Type
                          + " es=" + r0.Price.ToString("F2")
                          + " ym=" + (r0.Price * probeRatio).ToString("F2")
@@ -186,8 +186,8 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                 double ymPrice = Math.Round(rec.Price * ratio / ymTick) * ymTick;
 
-                int startIdx = Bars.GetBar(rec.SessionStart);
-                int endIdx   = Bars.GetBar(rec.SessionEnd);
+                int startIdx = Bars.GetBar(rec.SessionEnd);
+                int endIdx   = rec.BreakTime != DateTime.MinValue ? Bars.GetBar(rec.BreakTime) : lastBar;
                 if (startIdx < 0) continue;
                 if (endIdx > lastBar) endIdx = lastBar;
                 int endDrawIdx = Math.Max(endIdx, Math.Min(lastBar, startIdx + 10));
