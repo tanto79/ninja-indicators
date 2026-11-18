@@ -4890,6 +4890,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        #endregion
+
         private int LevelOf(double price)
         {
             if (TickSize <= 0)
