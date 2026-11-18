@@ -334,6 +334,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush valueAreaFillBrush;
         private SharpDX.Direct2D1.Brush levelZoneFillBrush;      // level-zone fill (VP + TPO levels, all-or-nothing)
         private SharpDX.Direct2D1.Brush levelZoneBorderBrush;    // level-zone outline
+        private SharpDX.Direct2D1.Brush roleSupportBrush;        // level role: acting-as-support tag
+        private SharpDX.Direct2D1.Brush roleResistanceBrush;     // level role: acting-as-resistance tag
+        private SharpDX.Direct2D1.Brush roleBreakingBrush;       // level role: testing/breaking tag
+        private SharpDX.Direct2D1.Brush roleUntestedBrush;       // level role: untested tag
+        private readonly Dictionary<string, LevelRoleState> levelRoleStates = new Dictionary<string, LevelRoleState>();
+        private DateTime roleLastTickTime = DateTime.MinValue;
         private SharpDX.Direct2D1.Brush nakedVpocBrush;
         private SharpDX.Direct2D1.Brush nakedVABrush;      // prior/naked VVAL
         private SharpDX.Direct2D1.Brush nakedVAHBrush;     // prior/naked VVAH
@@ -724,6 +730,50 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Browsable(false)]
         public string LevelZoneColorSerialize
         { get { return Serialize.BrushToString(LevelZoneColor); } set { LevelZoneColor = Serialize.StringToBrush(value); } }
+
+        #endregion
+
+        #region Properties — Level Roles
+
+        [NinjaScriptProperty]
+        [Display(Name = "Show Level Roles",
+                 Description = "Live support/resistance classification beside each prior-session and naked High/Low/VPOC/VVAH/VVAL: untested, testing, held, breaking (acceptance timer) or flipped. Price side gives the role; tick interactions confirm it. Tick-driven and identical on any chart bar size.",
+                 Order = 1, GroupName = "3B. Level Roles")]
+        public bool ShowLevelRoles { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 3600)]
+        [Display(Name = "Role Accept Seconds", Description = "Seconds price must hold beyond the level consecutively before a break is accepted and the role flips (default 180)", Order = 2, GroupName = "3B. Level Roles")]
+        public int LevelRoleAcceptSeconds { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 1000)]
+        [Display(Name = "Role Touch Tolerance Ticks", Description = "Ticks around each level that count as testing the level (default 8)", Order = 3, GroupName = "3B. Level Roles")]
+        public int LevelRoleTouchToleranceTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Role Support Color", Description = "Tag color when a level is acting as support", Order = 4, GroupName = "3B. Level Roles")]
+        public System.Windows.Media.Brush LevelRoleSupportColor { get; set; }
+        [Browsable(false)]
+        public string LevelRoleSupportColorSerialize
+        { get { return Serialize.BrushToString(LevelRoleSupportColor); } set { LevelRoleSupportColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Role Resistance Color", Description = "Tag color when a level is acting as resistance", Order = 5, GroupName = "3B. Level Roles")]
+        public System.Windows.Media.Brush LevelRoleResistanceColor { get; set; }
+        [Browsable(false)]
+        public string LevelRoleResistanceColorSerialize
+        { get { return Serialize.BrushToString(LevelRoleResistanceColor); } set { LevelRoleResistanceColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Role Breaking/Testing Color", Description = "Tag color while a level is being tested or broken (acceptance timer running)", Order = 6, GroupName = "3B. Level Roles")]
+        public System.Windows.Media.Brush LevelRoleBreakingColor { get; set; }
+        [Browsable(false)]
+        public string LevelRoleBreakingColorSerialize
+        { get { return Serialize.BrushToString(LevelRoleBreakingColor); } set { LevelRoleBreakingColor = Serialize.StringToBrush(value); } }
 
         #endregion
 
@@ -1304,6 +1354,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LevelZoneTicksUp       = 8;
                 LevelZoneTicksDown     = 8;
                 LevelZoneColor         = System.Windows.Media.Brushes.DodgerBlue;
+                ShowLevelRoles               = true;
+                LevelRoleAcceptSeconds       = 180;  // price must hold ~3 minutes beyond a level before its role flips
+                LevelRoleTouchToleranceTicks = 8;
+                LevelRoleSupportColor        = System.Windows.Media.Brushes.LimeGreen;
+                LevelRoleResistanceColor     = System.Windows.Media.Brushes.Red;
+                LevelRoleBreakingColor       = System.Windows.Media.Brushes.Gold;
                 HvnLvnOnlyMode         = false;  // off by default — shows all node types (HVN + MVN + LVN)
                 VolumeBarDisplayMode   = STVPBarDisplayMode.Volume;  // default to standard volume bars
                 ShowSessionBuysSells   = true;
@@ -1685,6 +1741,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (ShowNakedVPOC || ShowPriorSessionVPOC || ShowNakedVAHVAL || ShowPriorSessionLevels
                 || ShowNakedTPOPOC || ShowNakedTPOVAHVAL || ShowNakedTPOSD2 || ShowNakedTPOSD3 || ShowNakedSinglePrints)
                 CheckNakedLevelTests(tickPrice, tickTime);
+
+            // --- Live support/resistance role tracking on prior-session and naked levels ---
+            if (ShowLevelRoles)
+                UpdateLevelRoles(tickPrice, tickTime);
 
             // --- TPO letter construction ---
             if (ShowTPOLetters || ShowTPOPOC || ShowTPOVAHVAL || ShowTPOSD2 || ShowTPOSD3
@@ -2432,6 +2492,224 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         #endregion
 
+        #region Level Roles (live support/resistance state machine)
+
+        private enum LRState
+        {
+            Untested,   // no tick has reached the touch-tolerance band this session
+            Testing,    // price is inside the touch-tolerance band
+            Held,       // a test was completed and the level rejected it (held)
+            Breaking,   // price is beyond the level and the acceptance timer is running
+            Flipped     // break accepted — the level now acts in the opposite role
+        }
+
+        private class LevelRoleState
+        {
+            public LRState  State         = LRState.Untested;
+            public int      Role;         // last confirmed acting side: +1 = support (price above), -1 = resistance (price below), 0 = none yet
+            public bool     InBand;       // price currently inside the touch-tolerance band
+            public bool     PendingReject; // current band entry can mature into a completed rejection
+            public int      Touches;
+            public int      Helds;
+            public int      BreakDir;     // direction of the running break attempt: +1 up, -1 down, 0 = none
+            public DateTime BreakStart;   // tick-time the current run beyond the level began
+        }
+
+        private string RoleKey(SessionProfile s, string type)
+        { return s.StartTime.Ticks.ToString() + "|" + type; }
+
+        /// <summary>
+        /// Drives the per-level support/resistance state machine from the tick stream.
+        /// Roles are positional (price above a level = support, below = resistance) and
+        /// are confirmed by tick interactions: tests in the tolerance band, completed
+        /// rejections (held) and breaks that hold beyond the level for
+        /// LevelRoleAcceptSeconds (flip). All timing uses tick timestamps, so behavior is
+        /// identical on any chart bar size and rebuilds during the historical replay.
+        /// </summary>
+        private void UpdateLevelRoles(double tickPrice, DateTime tickTime)
+        {
+            if (currentSession == null || sessions == null || sessions.Count < 2) return;
+
+            roleLastTickTime = tickTime;
+            double ts  = rowSize / Math.Max(1, TicksPerRow);
+            double tol = Math.Max(1, LevelRoleTouchToleranceTicks) * ts;
+
+            // Mirrors the visibility rules used when each extension line is drawn.
+            for (int i = 0; i < sessions.Count - 1; i++)
+            {
+                SessionProfile s = sessions[i];
+                if (s.VolumeAtPrice.Count == 0) continue;
+                bool isMostRecent = (s == mostRecentCompletedSession);
+
+                if (ShowPriorSessionLevels && s.HighLevel > 0)
+                    UpdateLevelRoleState(RoleKey(s, "HI"), s.SessionHigh, tickPrice, tickTime, tol);
+                if (ShowPriorSessionLevels && s.LowLevel > 0)
+                    UpdateLevelRoleState(RoleKey(s, "LO"), s.SessionLow, tickPrice, tickTime, tol);
+
+                if ((isMostRecent ? ShowPriorSessionVPOC : ShowNakedVPOC) && s.VPOCLevel > 0)
+                    UpdateLevelRoleState(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5, tickPrice, tickTime, tol);
+
+                if (ShowNakedVAHVAL && s.VVAH > 0)
+                    UpdateLevelRoleState(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, tickPrice, tickTime, tol);
+                if (ShowNakedVAHVAL && s.VVAL > 0)
+                    UpdateLevelRoleState(RoleKey(s, "VVAL"), s.VVAL * rowSize, tickPrice, tickTime, tol);
+            }
+        }
+
+        private void UpdateLevelRoleState(string key, double level, double tickPrice,
+            DateTime tickTime, double tol)
+        {
+            LevelRoleState st;
+            if (!levelRoleStates.TryGetValue(key, out st) || st == null)
+            {
+                st = new LevelRoleState();
+                levelRoleStates[key] = st;
+            }
+
+            double d  = tickPrice - level;
+            double ad = Math.Abs(d);
+
+            // Inside the touch-tolerance band: disarms the acceptance clock (a break
+            // must be continuous) and registers the approach of a new test.
+            if (ad <= tol)
+            {
+                st.BreakDir = 0;
+                if (st.State == LRState.Breaking)
+                    st.State = LRState.Testing;
+                if (!st.InBand)
+                {
+                    st.InBand        = true;
+                    st.PendingReject = true;
+                    st.Touches++;
+                }
+                if (st.State == LRState.Untested)
+                    st.State = LRState.Testing;
+                return;
+            }
+
+            st.InBand = false;
+            int side = d > 0 ? 1 : -1;
+
+            if (st.State == LRState.Flipped)
+            {
+                if (side != st.Role)
+                {
+                    // reclaim: the flip failed, the level is back in its original role
+                    st.State         = LRState.Held;
+                    st.Helds++;
+                    st.Role          = side;
+                    st.BreakDir      = 0;
+                    st.PendingReject = false;
+                }
+                else if (st.PendingReject)
+                {
+                    // the retest of the flipped level was rejected
+                    st.State         = LRState.Held;
+                    st.Helds++;
+                    st.PendingReject = false;
+                }
+            }
+            else if (st.Role == 0)
+            {
+                // first decisive print of the session: seeds the role by position,
+                // no hold or flip event to credit yet
+                st.State         = LRState.Held;
+                st.Role          = side;
+                st.PendingReject = false;
+            }
+            else if (side == st.Role)
+            {
+                if (st.State == LRState.Breaking)
+                {
+                    // decisive return to the role side before acceptance = failed break
+                    st.Helds++;
+                    st.BreakDir      = 0;
+                    st.PendingReject = false;
+                }
+                else if (st.PendingReject)
+                {
+                    // the band entry just left behind matured into a completed rejection
+                    st.Helds++;
+                    st.PendingReject = false;
+                }
+                st.State = LRState.Held;
+            }
+            else
+            {
+                // beyond the level on the opposite side of the confirmed role:
+                // (re)start the acceptance clock when the run changes
+                if (st.BreakDir != side)
+                {
+                    st.BreakDir   = side;
+                    st.BreakStart = tickTime;
+                }
+                if ((tickTime - st.BreakStart).TotalSeconds >= LevelRoleAcceptSeconds)
+                {
+                    st.State         = LRState.Flipped;
+                    st.Role          = side;
+                    st.BreakDir      = 0;
+                    st.PendingReject = false;
+                }
+                else
+                    st.State = LRState.Breaking;
+            }
+        }
+
+        /// <summary>
+        /// Draws the live role tag under a prior-session or naked level line at the
+        /// right-edge label anchor. Visible whenever the line's own label is visible:
+        /// untested lines always tag; broken lines tag only while the break belongs
+        /// to the current session.
+        /// </summary>
+        private void DrawLevelRoleTag(ChartScale chartScale, string key, double price, DateTime breakTime)
+        {
+            if (roleBreakingBrush == null || roleUntestedBrush == null) return;
+            if (!(breakTime == DateTime.MinValue
+                  || (currentSession != null && breakTime >= currentSession.StartTime)))
+                return;
+
+            LevelRoleState st;
+            if (!levelRoleStates.TryGetValue(key, out st) || st == null) return;
+
+            string roleWord = st.Role < 0 ? "Resistance" : "Support";
+            SharpDX.Direct2D1.Brush brush;
+            string tag;
+            switch (st.State)
+            {
+                case LRState.Untested:
+                    brush = roleUntestedBrush;
+                    tag   = roleWord + " (untested)";
+                    break;
+                case LRState.Testing:
+                    brush = roleBreakingBrush;
+                    tag   = roleWord + " · testing";
+                    break;
+                case LRState.Held:
+                    brush = st.Role < 0 ? roleResistanceBrush : roleSupportBrush;
+                    if (st.Helds > 0)
+                        tag = roleWord + " · held x" + st.Helds.ToString();
+                    else
+                        tag = roleWord;
+                    break;
+                case LRState.Flipped:
+                    brush = st.Role < 0 ? roleResistanceBrush : roleSupportBrush;
+                    tag   = roleWord + " · flipped";
+                    break;
+                default: // Breaking
+                    int elapsed = roleLastTickTime > st.BreakStart
+                        ? (int)(roleLastTickTime - st.BreakStart).TotalSeconds : 0;
+                    brush = roleBreakingBrush;
+                    tag   = roleWord + " · BREAKING " + elapsed.ToString() + "s";
+                    break;
+            }
+
+            float y = chartScale.GetYByValue(price);
+            RenderTarget.DrawText(tag, statsFormat,
+                new SharpDX.RectangleF(GetCanonicalLabelAnchorX(), y + 8, 170, 14), brush);
+        }
+
+        #endregion
+
         // =========================================================
         //  PIERCE-AND-RETURN ALERTS
         // =========================================================
@@ -2730,6 +3008,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double vpocPrice = session.VPOCLevel * rowSize + (rowSize * 0.5);
                 RenderExtensionLine(chartScale, endX, vpocPrice,
                     session.VPOCBreakTime, nakedVpocBrush, pfx + "VPOC " + vpocPrice.ToString("F2"), ShowLevelZones);
+                DrawLevelRoleTag(chartScale, RoleKey(session, "VPOC"), vpocPrice, session.VPOCBreakTime);
             }
 
             // Naked VVAH / VVAL
@@ -2740,12 +3019,14 @@ namespace NinjaTrader.NinjaScript.Indicators
                     double vvahPrice = session.VVAH * rowSize + rowSize;
                     RenderExtensionLine(chartScale, endX, vvahPrice,
                         session.VVAHBreakTime, nakedVAHBrush, pfx + "VVAH " + vvahPrice.ToString("F2"), ShowLevelZones);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "VVAH"), vvahPrice, session.VVAHBreakTime);
                 }
                 if (session.VVAL > 0)
                 {
                     double vvalPrice = session.VVAL * rowSize;
                     RenderExtensionLine(chartScale, endX, vvalPrice,
                         session.VVALBreakTime, nakedVABrush, pfx + "VVAL " + vvalPrice.ToString("F2"), ShowLevelZones);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "VVAL"), vvalPrice, session.VVALBreakTime);
                 }
             }
 
@@ -2789,9 +3070,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (session.HighLevel > 0)
                     RenderExtensionLine(chartScale, endX, session.SessionHigh,
                         session.HighBreakTime, priorHighLowBrush, pfx + "HI " + session.SessionHigh.ToString("F2"), ShowLevelZones);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "HI"), session.SessionHigh, session.HighBreakTime);
                 if (session.LowLevel > 0)
                     RenderExtensionLine(chartScale, endX, session.SessionLow,
                         session.LowBreakTime, priorHighLowBrush, pfx + "LO " + session.SessionLow.ToString("F2"), ShowLevelZones);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "LO"), session.SessionLow, session.LowBreakTime);
             }
 
             // === TPO naked extensions ===
@@ -4472,6 +4755,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 nakedVABrush          = DxBrush(NakedVAColor);
                 nakedVAHBrush         = DxBrush(NakedVAHColor);
 
+                // Level role tags
+                roleSupportBrush      = DxBrush(LevelRoleSupportColor);
+                roleResistanceBrush   = DxBrush(LevelRoleResistanceColor);
+                roleBreakingBrush     = DxBrush(LevelRoleBreakingColor);
+                roleUntestedBrush     = DxBrushWithAlpha(System.Windows.Media.Brushes.Gray, 0.85f);
+
                 // 2σ brushes — full opacity for box/labels, semi-transparent for fill
                 sd2VABoxBrush  = DxBrush(SD2Color);
                 nakedSD2Brush  = DxBrush(SD2Color);
@@ -4632,6 +4921,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (nakedVpocBrush        != null) { nakedVpocBrush.Dispose();        nakedVpocBrush        = null; }
             if (nakedVABrush          != null) { nakedVABrush.Dispose();          nakedVABrush          = null; }
             if (nakedVAHBrush         != null) { nakedVAHBrush.Dispose();         nakedVAHBrush         = null; }
+            if (roleSupportBrush      != null) { roleSupportBrush.Dispose();      roleSupportBrush      = null; }
+            if (roleResistanceBrush   != null) { roleResistanceBrush.Dispose();   roleResistanceBrush   = null; }
+            if (roleBreakingBrush     != null) { roleBreakingBrush.Dispose();     roleBreakingBrush     = null; }
+            if (roleUntestedBrush     != null) { roleUntestedBrush.Dispose();     roleUntestedBrush     = null; }
             if (sd2VABoxBrush         != null) { sd2VABoxBrush.Dispose();         sd2VABoxBrush         = null; }
             if (sd2VAFillBrush        != null) { sd2VAFillBrush.Dispose();        sd2VAFillBrush        = null; }
             if (nakedSD2Brush         != null) { nakedSD2Brush.Dispose();         nakedSD2Brush         = null; }
