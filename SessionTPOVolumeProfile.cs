@@ -2961,8 +2961,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                     break;
                 case LRState.Testing:
                     brush = roleBreakingBrush;
-                    tag   = roleWord + " · testing";
-                    if (tradedBandVol > 0)
+                    // an unseeded level has no direction yet — never claim one
+                    tag   = st.Role != 0 ? roleWord + " · testing" : "(testing)";
+                    if (st.Role != 0 && tradedBandVol > 0)
                         tag += " · " + FormatVol(tradedBandVol);
                     break;
                 case LRState.Held:
