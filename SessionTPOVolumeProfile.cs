@@ -2553,6 +2553,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                     UpdateLevelRoleState(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, tickPrice, tickTime, tol);
                 if (ShowNakedVAHVAL && s.VVAL > 0)
                     UpdateLevelRoleState(RoleKey(s, "VVAL"), s.VVAL * rowSize, tickPrice, tickTime, tol);
+
+                if (ShowNakedTPOPOC && s.POCLevel > 0)
+                    UpdateLevelRoleState(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5, tickPrice, tickTime, tol);
+                if (ShowNakedTPOVAHVAL && s.TPOVAH > 0)
+                    UpdateLevelRoleState(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize, tickPrice, tickTime, tol);
+                if (ShowNakedTPOVAHVAL && s.TPOVAL > 0)
+                    UpdateLevelRoleState(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize, tickPrice, tickTime, tol);
             }
         }
 
@@ -3089,15 +3096,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double p = session.POCLevel * rowSize + (rowSize * 0.5);
                 RenderExtensionLine(chartScale, endX, p,
                     session.TPOPOCBreakTime, nakedTPOPocBrush, pfx + rPfx + "POC " + p.ToString("F2"), ShowLevelZones);
+                DrawLevelRoleTag(chartScale, RoleKey(session, "TPOPOC"), p, session.TPOPOCBreakTime);
             }
             if (ShowNakedTPOVAHVAL)
             {
                 if (session.TPOVAH > 0)
+                {
                     RenderExtensionLine(chartScale, endX, session.TPOVAH * rowSize + rowSize,
                         session.TPOVAHBreakTime, nakedTPOVABrush, pfx + rPfx + "TPOVAH " + (session.TPOVAH * rowSize + rowSize).ToString("F2"), ShowLevelZones);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "TPOVAH"), session.TPOVAH * rowSize + rowSize, session.TPOVAHBreakTime);
+                }
                 if (session.TPOVAL > 0)
+                {
                     RenderExtensionLine(chartScale, endX, session.TPOVAL * rowSize,
                         session.TPOVALBreakTime, nakedTPOVABrush, pfx + rPfx + "TPOVAL " + (session.TPOVAL * rowSize).ToString("F2"), ShowLevelZones);
+                    DrawLevelRoleTag(chartScale, RoleKey(session, "TPOVAL"), session.TPOVAL * rowSize, session.TPOVALBreakTime);
+                }
             }
             if (ShowNakedTPOSD2)
             {
