@@ -4857,6 +4857,18 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
         }
 
+        /// <summary>Diagnostics for YMCross: stored instrument, count, last price and publish time, regardless of filter.</summary>
+        public static string GetPublicationDiagnostics(string filter, out int count, out double lastPrice, out DateTime publishedAtUtc)
+        {
+            lock (ymPublishLock)
+            {
+                count                 = ymPublishedLevels.Count;
+                lastPrice             = ymPublishedLastPrice;
+                publishedAtUtc        = ymPublishedAt;
+                return ymPublishedInstrument;
+            }
+        }
+
         private void ClearPublishedLevels()
         {
             lock (ymPublishLock)

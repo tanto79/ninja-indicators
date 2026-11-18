@@ -36,15 +36,6 @@ namespace NinjaTrader.NinjaScript.Indicators
     /// </summary>
     public class STVPYMCrossLevels : Indicator
     {
-        private class YmLevel
-        {
-            public string                          Label;
-            public double                          YmPrice;
-            public DateTime                        Start;
-            public DateTime                        End;
-            public SharpDX.Direct2D1.Brush         Brush;
-        }
-
         // SharpDX resources
         private SharpDX.Direct2D1.SolidColorBrush hiLoBrush;
         private SharpDX.Direct2D1.SolidColorBrush vpocBrush;
@@ -63,6 +54,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         private System.Windows.Media.Brush builtFromTpo;
         private System.Windows.Media.Brush builtFromSp;
         private System.Windows.Media.Brush builtFromText;
+
+        private DateTime lastDiagAt = DateTime.MinValue;
 
         protected override void OnStateChange()
         {
@@ -111,6 +104,38 @@ namespace NinjaTrader.NinjaScript.Indicators
             base.OnRender(chartControl, chartScale);
 
             if (RenderTarget == null || ChartBars == null || chartControl == null) return;
+
+            if (Diagnostics && (DateTime.UtcNow - lastDiagAt).TotalMilliseconds >= 2000)
+            {
+                lastDiagAt = DateTime.UtcNow;
+                int pubCount; double pubLast; DateTime pubAt;
+                string pubInstrument = SessionTPOVolumeProfile.GetPublicationDiagnostics(SourceFilter, out pubCount, out pubLast, out pubAt);
+                double probePrice;
+                List<SessionTPOVolumeProfile.STVPLevelRecord> probe =
+                    SessionTPOVolumeProfile.GetPublishedLevels(SourceFilter, 0, out probePrice);
+                double probeRatio = ResolveRatio(pubLast);
+                string msg = "YM Cross diag: stored=" + pubCount
+                    + "  storedInstrument=" + pubInstrument
+                    + "  myFilter=" + SourceFilter
+                    + "  visible=" + ((probe == null) ? "rejected" : probe.Count.ToString())
+                    + "  ageSec=" + ((pubAt == DateTime.MinValue) ? "n/a" : (DateTime.UtcNow - pubAt).TotalSeconds.ToString("F1"))
+                    + "  input=" + (Instrument != null ? Instrument.FullName : "null")
+                    + "  Close[0]=" + Close[0].ToString("F2")
+                    + "  esLast=" + pubLast.ToString("F2")
+                    + "  ratio=" + probeRatio.ToString("F4");
+                if (probe != null && probe.Count > 0)
+                {
+                    SessionTPOVolumeProfile.STVPLevelRecord r0 = probe[probe.Count - 1];
+                    int bStart = Bars.GetBar(r0.SessionStart);
+                    int bEnd   = Bars.GetBar(r0.SessionEnd);
+                    msg += "  lastRec=[type=" + r0.Type
+                         + " es=" + r0.Price.ToString("F2")
+                         + " ym=" + (r0.Price * probeRatio).ToString("F2")
+                         + " bars " + bStart + ".." + bEnd
+                         + " of " + (ChartBars.Count - 1).ToString() + "]";
+                }
+                Print(msg);
+            }
 
             double esLastPrice;
             List<SessionTPOVolumeProfile.STVPLevelRecord> src =
@@ -266,6 +291,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                  Description = "Also draw levels the source chart has already tested (broken). Off = naked/untested levels only.",
                  Order = 3, GroupName = "1. Source")]
         public bool ShowBrokenLevels { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Diagnostics",
+                 Description = "Print publish/read state to the NinjaScript Output window (New > NinjaScript Output) every 2 seconds for troubleshooting.",
+                 Order = 4, GroupName = "1. Source")]
+        public bool Diagnostics { get; set; }
 
         #endregion
 
