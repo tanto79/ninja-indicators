@@ -148,6 +148,8 @@ namespace NinjaTrader.NinjaScript.Indicators
             public DateTime SessionDate;
             public DateTime StartTime;
             public DateTime EndTime;
+            // Template-session class captured when the session opened (RTH Mode)
+            public bool     IsRthSession;
 
             // Core volume data
             public Dictionary<int, long> VolumeAtPrice;
@@ -1803,7 +1805,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 CheckNakedLevelTests(tickPrice, tickTime);
 
             // --- Live support/resistance role tracking on prior-session and naked levels ---
-            if (ShowLevelRoles)
+            // Follows the chart's trading-hours template (lastKeyBegin/lastKeyEnd from
+            // GetSessionKey); each level's session-class gating is inside UpdateLevelRoles.
+            if (ShowLevelRoles && tickTime >= lastKeyBegin && tickTime <= lastKeyEnd)
                 UpdateLevelRoles(tickPrice, tickTime);
 
             // --- TPO letter construction ---
@@ -1983,6 +1987,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             return tod >= RTHStartTime && tod < RTHEndTime;
         }
 
+        /// <summary>
+        /// Classifies the template session that is opening as RTH or overnight, using
+        /// the same rule the profile engine applies with RTH Mode Auto: a session opening
+        /// inside the RTH Start/End window is an RTH session (day-only templates open
+        /// inside it, so every hour of the template is RTH); sessions opening outside it
+        /// are overnight sessions. Called from StartNewSession while lastKeyBegin holds
+        /// the opening session's template begin, so no reconstruction from stored times.
+        /// Full Session marks every session RTH.
+        /// </summary>
+        private bool IsRthTemplateSession()
+        {
+            if (RthMode == STVPRthMode.FullSession) return true;
+            if (lastKeyBegin == DateTime.MinValue) return true;
+            TimeSpan b = lastKeyBegin.TimeOfDay;
+            return b >= RTHStartTime && b < RTHEndTime;
+        }
+
         private void StartNewSession(DateTime barTime, DateTime sessionDate)
         {
             // Capture the closing session before resetting currentSession
@@ -2009,8 +2030,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             currentSession   = new SessionProfile
             {
-                SessionDate = sessionDate,
-                StartTime   = barTime
+                SessionDate  = sessionDate,
+                StartTime    = barTime,
+                IsRthSession = IsRthTemplateSession()   // follows the template: overnight vs RTH session
             };
             currentTPOPeriod = null;
 
@@ -2580,6 +2602,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             public LevelRoleState State;
             public double         Level;
+            public bool           IsRthSession;   // class of the session the level came from
         }
 
         private string RoleKey(SessionProfile s, string type)
@@ -2621,9 +2644,16 @@ namespace NinjaTrader.NinjaScript.Indicators
             double ts  = rowSize / Math.Max(1, TicksPerRow);
             double tol = Math.Max(1, LevelRoleTouchToleranceTicks) * ts;
 
+            // Each level classifies only during the hours of its own session class:
+            // overnight-session levels freeze when RTH starts, RTH-session levels freeze
+            // when the RTH session ends. IsRthAt resolves the tick's class via RTH Mode.
+            bool tickIsRth = IsRthAt(tickTime);
+
             for (int i = 0; i < roleTrackers.Count; i++)
             {
                 RoleTracker t = roleTrackers[i];
+                if (t.IsRthSession != tickIsRth)
+                    continue;   // the level's own session class is closed
                 RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol);
             }
         }
@@ -2642,30 +2672,30 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowPriorSessionLevels && LevelRolesHiLo)
                 {
                     if (s.HighLevel > 0)
-                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh);
+                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh, s.IsRthSession);
                     if (s.LowLevel > 0)
-                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow);
+                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow, s.IsRthSession);
                 }
 
                 if ((isMostRecent ? ShowPriorSessionVPOC : ShowNakedVPOC) && s.VPOCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5);
+                    AddRoleTracker(RoleKey(s, "VPOC"), s.VPOCLevel * rowSize + rowSize * 0.5, s.IsRthSession);
 
                 if (ShowNakedVAHVAL)
                 {
                     if (s.VVAH > 0)
-                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize);
+                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, s.IsRthSession);
                     if (s.VVAL > 0)
-                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize);
+                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize, s.IsRthSession);
                 }
 
                 if ((isMostRecent ? ShowPriorSessionTPOPOC : ShowNakedTPOPOC) && s.POCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5);
+                    AddRoleTracker(RoleKey(s, "TPOPOC"), s.POCLevel * rowSize + rowSize * 0.5, s.IsRthSession);
                 if (isMostRecent ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
                 {
                     if (s.TPOVAH > 0)
-                        AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize);
+                        AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize, s.IsRthSession);
                     if (s.TPOVAL > 0)
-                        AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize);
+                        AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize, s.IsRthSession);
                 }
             }
 
@@ -2683,7 +2713,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             roleTrackerPriorTPOVA   = ShowPriorSessionTPOVAHVAL;
         }
 
-        private void AddRoleTracker(string key, double level)
+        private void AddRoleTracker(string key, double level, bool isRthSession)
         {
             LevelRoleState st;
             if (!levelRoleStates.TryGetValue(key, out st) || st == null)
@@ -2695,6 +2725,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             RoleTracker t = new RoleTracker();
             t.State = st;
             t.Level = level;
+            t.IsRthSession = isRthSession;
             roleTrackers.Add(t);
         }
 
