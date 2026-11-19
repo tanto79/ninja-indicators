@@ -1803,25 +1803,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                     currentSession.RTHLow = tickPrice;
             }
 
-            // --- Naked level testing + live support/resistance role tracking ---
-            // Both S/R update paths follow the same hours the profiles do: only ticks
-            // inside the chart's trading-hours template session (lastKeyBegin/
-            // lastKeyEnd from GetSessionKey) AND inside the RTH window resolved by
-            // RTH Mode (Auto per contract / Manual / Full Session) reach them. With
-            // RTH Mode = Auto on a Globex product this freezes every prior-session and
-            // naked level line test and role during the overnight session; everything
-            // resumes at RTH Start. Use Full Session (or an RTH-only template with
-            // Auto) to classify all hours the template trades.
-            bool srUpdateWindow = tickTime >= lastKeyBegin && tickTime <= lastKeyEnd
-                && IsRthAt(tickTime);
-
-            if (srUpdateWindow
-                && (ShowNakedVPOC || ShowPriorSessionVPOC || ShowNakedVAHVAL || ShowPriorSessionLevels
+            // --- Naked level testing against prior sessions ---
+            if (ShowNakedVPOC || ShowPriorSessionVPOC || ShowNakedVAHVAL || ShowPriorSessionLevels
                 || ShowNakedTPOPOC || ShowPriorSessionTPOPOC || ShowNakedTPOVAHVAL || ShowPriorSessionTPOVAHVAL
-                || ShowNakedTPOSD2 || ShowNakedTPOSD3 || ShowNakedSinglePrints))
+                || ShowNakedTPOSD2 || ShowNakedTPOSD3 || ShowNakedSinglePrints)
                 CheckNakedLevelTests(tickPrice, tickTime);
 
-            if (ShowLevelRoles && srUpdateWindow)
+            // --- Live support/resistance role tracking on prior-session and naked levels ---
+            // Fed from ticks inside the chart's trading-hours template session
+            // (lastKeyBegin/lastKeyEnd from GetSessionKey). Each level classifies only
+            // during hours of its own session class (overnight levels freeze when RTH
+            // starts; RTH levels freeze outside RTH) - see IsRthSessionProfile.
+            if (ShowLevelRoles && tickTime >= lastKeyBegin && tickTime <= lastKeyEnd)
                 UpdateLevelRoles(tickPrice, tickTime, upVol, downVol);
 
             // --- TPO letter construction ---
@@ -1999,6 +1992,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (UseFullSessionRth()) return true;
             TimeSpan tod = t.TimeOfDay;
             return tod >= RTHStartTime && tod < RTHEndTime;
+        }
+
+        /// <summary>
+        /// Session class per RTH Mode, used to scope S/R classification to the level's
+        /// own hours: Full Session markets are all RTH; otherwise any session overlapping
+        /// the RTH Start/End window classifies as RTH and pure overnight (Globex) segments
+        /// as overnight. Overnight-session levels therefore stop calculating the moment
+        /// RTH starts, and RTH-session levels freeze outside RTH.
+        /// </summary>
+        private bool IsRthSessionProfile(SessionProfile s)
+        {
+            if (s == null || s.EndTime <= s.StartTime) return true;
+            if (RthMode == STVPRthMode.FullSession) return true;
+            DateTime rs = s.StartTime.Date + RTHStartTime;
+            if (rs >= s.StartTime && rs < s.EndTime) return true;
+            rs = rs.AddDays(1);
+            return rs >= s.StartTime && rs < s.EndTime;
         }
 
         private void StartNewSession(DateTime barTime, DateTime sessionDate)
@@ -2426,11 +2436,15 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             if (sessions.Count < 2) return;
 
+            bool tickIsRth = IsRthAt(breakTime);
+
             // Only iterate prior (completed) sessions
             for (int i = 0; i < sessions.Count - 1; i++)
             {
                 var s = sessions[i];
                 if (s.VolumeAtPrice.Count == 0) continue;
+                if (IsRthSessionProfile(s) != tickIsRth)
+                    continue;   // level's own session class is closed: no line tests
 
                 // VPOC test
                 if (!s.VPOCTested && s.VPOCLevel > 0)
@@ -2601,6 +2615,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             public LevelRoleState State;
             public double         Level;
+            public bool           IsRthSession;  // session class the level was built from
         }
 
         private string RoleKey(SessionProfile s, string type)
@@ -2692,10 +2707,13 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RebuildRoleTrackers();
 
             double tol = TouchTolerance();
+            bool tickIsRth = IsRthAt(tickTime);
 
             for (int i = 0; i < roleTrackers.Count; i++)
             {
                 RoleTracker t = roleTrackers[i];
+                if (t.IsRthSession != tickIsRth)
+                    continue;   // level's own session class is closed: classification frozen
                 RunLevelRoleMachine(t.State, t.Level, tickPrice, tickTime, tol, tradedDelta, upVol, downVol);
             }
         }
@@ -2714,30 +2732,30 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowPriorSessionLevels && LevelRolesHiLo)
                 {
                     if (s.HighLevel > 0)
-                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh);
+                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh, IsRthSessionProfile(s));
                     if (s.LowLevel > 0)
-                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow);
+                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow, IsRthSessionProfile(s));
                 }
 
                 if ((isMostRecent ? ShowPriorSessionVPOC : ShowNakedVPOC) && s.VPOCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "VPOC"), PocPrice(s.VPOCLevel));
+                    AddRoleTracker(RoleKey(s, "VPOC"), PocPrice(s.VPOCLevel), IsRthSessionProfile(s));
 
                 if (ShowNakedVAHVAL)
                 {
                     if (s.VVAH > 0)
-                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize);
+                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, IsRthSessionProfile(s));
                     if (s.VVAL > 0)
-                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize);
+                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize, IsRthSessionProfile(s));
                 }
 
                 if ((isMostRecent ? ShowPriorSessionTPOPOC : ShowNakedTPOPOC) && s.POCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "TPOPOC"), PocPrice(s.POCLevel));
+                    AddRoleTracker(RoleKey(s, "TPOPOC"), PocPrice(s.POCLevel), IsRthSessionProfile(s));
                 if (isMostRecent ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
                 {
                     if (s.TPOVAH > 0)
-                        AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize);
+                        AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize, IsRthSessionProfile(s));
                     if (s.TPOVAL > 0)
-                        AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize);
+                        AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize, IsRthSessionProfile(s));
                 }
             }
 
@@ -2755,7 +2773,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             roleTrackerPriorTPOVA   = ShowPriorSessionTPOVAHVAL;
         }
 
-        private void AddRoleTracker(string key, double level)
+        private void AddRoleTracker(string key, double level, bool isRthSession)
         {
             LevelRoleState st;
             if (!levelRoleStates.TryGetValue(key, out st) || st == null)
@@ -2765,8 +2783,9 @@ namespace NinjaTrader.NinjaScript.Indicators
             }
 
             RoleTracker t = new RoleTracker();
-            t.State = st;
-            t.Level = level;
+            t.State        = st;
+            t.Level        = level;
+            t.IsRthSession = isRthSession;
             roleTrackers.Add(t);
         }
 
