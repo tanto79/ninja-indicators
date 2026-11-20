@@ -17,6 +17,7 @@ LEVEL_TYPES = (
 @dataclass
 class Settings:
     root: Path
+    results_subdir: str = "results_v2"
 
     # Locked study settings
     tick_size: float = 0.25
@@ -31,12 +32,14 @@ class Settings:
     # overnight levels exist to be tested in the cash session).
     role_rth_only: bool = True
 
-    # ES session times (America/New_York)
-    # Globex opens 18:00 prior calendar day; RTH 09:30–16:00; session day ends 17:00
-    rth_start: str = "09:30"
+    # Chart template: "CME US Index Futures Split" on America/Chicago (Central).
+    # Night 17:00 CT -> 8:30 CT; day session 8:30 CT -> 16:00 CT (includes the
+    # 15:00-16:00 CT hour after the cash close, per the chart's session template).
+    timezone: str = "America/Chicago"
+    rth_start: str = "08:30"
     rth_end: str = "16:00"
-    globex_open: str = "18:00"
-    session_day_end: str = "17:00"  # futures "trading day" boundary
+    globex_open: str = "17:00"
+    session_day_end: str = "16:00"  # day session end; 16:00-17:00 CT is maintenance
 
     min_separation_ticks: int = 8
     confluence_ticks: int = 4
@@ -70,7 +73,7 @@ class Settings:
 
     @property
     def results_dir(self) -> Path:
-        return self.root / "results"
+        return self.root / self.results_subdir
 
     @property
     def events_path(self) -> Path:

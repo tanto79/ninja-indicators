@@ -203,8 +203,9 @@ def _replay_roles_fast(
                         naked_done[lvl.level_id] = ts
 
                 evs = run_machine(
-                    st, lvl.price, price, prev_price, ts,
-                    band, accept, tick_size,
+                    st, lvl.price, price
+                    if not pd.isna(prev_price) else None, ts,
+                    int(ts.value), band, accept, tick_size,
                 )
                 if evs:
                     is_naked = lvl.level_id not in naked_done or ts <= naked_done[lvl.level_id]

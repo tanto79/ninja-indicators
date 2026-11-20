@@ -17,8 +17,11 @@ import pytz
 
 from .config import Settings
 
-ET = pytz.timezone("America/New_York")
 UTC = pytz.UTC
+
+
+def chart_zone(settings) -> pytz.BaseTzInfo:
+    return pytz.timezone(getattr(settings, "timezone", "America/Chicago"))
 
 
 @dataclass
@@ -44,7 +47,7 @@ def _ensure_utc_series(ts: pd.Series) -> pd.Series:
 def trading_days_vectorized(ts_utc: pd.Series, settings: Settings) -> pd.Series:
     """Map each UTC timestamp to trading-day date string (YYYY-MM-DD). Vectorized."""
     ts = _ensure_utc_series(ts_utc)
-    et = ts.dt.tz_convert(ET)
+    et = ts.dt.tz_convert(chart_zone(settings))
     gh, gm = _parse_hhmm(settings.globex_open)
     end_h, end_m = _parse_hhmm(settings.session_day_end)
 
@@ -69,9 +72,10 @@ def session_bounds_utc(trading_day_str: str, settings: Settings):
     rh, rm = _parse_hhmm(settings.rth_start)
     reh, rem = _parse_hhmm(settings.rth_end)
 
-    g_et = ET.localize(datetime(prev.year, prev.month, prev.day, gh, gm, 0))
-    r_et = ET.localize(datetime(d.year, d.month, d.day, rh, rm, 0))
-    re_et = ET.localize(datetime(d.year, d.month, d.day, reh, rem, 0))
+    zone = chart_zone(settings)
+    g_et = zone.localize(datetime(prev.year, prev.month, prev.day, gh, gm, 0))
+    r_et = zone.localize(datetime(d.year, d.month, d.day, rh, rm, 0))
+    re_et = zone.localize(datetime(d.year, d.month, d.day, reh, rem, 0))
 
     def to_naive_utc(dt):
         return dt.astimezone(UTC).replace(tzinfo=None)
