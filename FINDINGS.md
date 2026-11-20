@@ -130,10 +130,10 @@ Treat break continuation as a follow-up research thread with more data, not a li
 
 Important clarification recorded for fidelity: **the replay never tested a current session's own
 developing levels** — levels activate only after their source session closes (`study.py` filter
-`source_session_id != view session`). What the aggregate results did include, though, were levels
-from **all** completed sessions (up to ~60 back), while the user's chart only shows levels from the
-last 20 sessions (`MaxSessionsToShow = 20`). Re-slicing to the chart-faithful universe
-(source-session gap ≤ 20) and splitting by source:
+`source_session_id != view session`). Levels from **all** completed sessions were tested (up to ~60
+back); the user's chart (`MaxSessionsToShow = 60`) shows exactly this universe for the 2-month
+dataset, so the full-sample results are chart-faithful. The gap ≤ 20 re-slice below is kept as a
+robustness check only (it barely changes anything). Splitting by source:
 
 | subset (first flips) | n | OOS-positive cells | mean IS | mean OOS |
 |---|---|---|---|---|
