@@ -232,3 +232,35 @@ Reads:
 - `results_v2/tables/*.csv` — all rate and grid tables, including `walk_forward_CONTROL.csv`.
 - Code: `level_role/analysis.py` (this run), `level_role/study.py` (streaming replay).
 - Run it yourself: see `README_STUDY.md` (double-click `RUN_STUDY.bat` on Windows).
+
+## 10. Plain-English trade rules (from the OOS-validated cells)
+
+Cost model: 1-tick slippage on market entry, 1-tick on the stop exit, target exits on a limit
+(no slip), ~$2.50/side commission = **2.4 ticks round trip**. Net numbers below include that.
+
+### Rule A — the A+ setup: FIRST flip of a NAKED level (~3.5/day, both directions)
+
+- A *naked* level = one the market has never traded since its session completed (the green
+  "naked" labels / prior H-L / RTHC that have sat untouched).
+- **LONG:** a support-side level (price above it) is traded by the market for the first time,
+  price breaks UP through it, and holds above for 180 s → indicator prints Flipped →
+  buy. Stop 32 ticks (8 pts) below entry. Target 60 ticks (15 pts). Exit at market if neither hits
+  within 10 minutes.
+- **SHORT:** a resistance-side level breaks DOWN and holds for 180 s → Flipped → sell.
+  Stop 32 ticks (8 pts) above entry. Target 60 ticks (15 pts). Same 10-min time stop.
+- Expected value: +5.4 ticks/trade gross, **≈ +3.0 ticks net ≈ $38/contract** across 464 signals
+  (244 short / 220 long). Win rate 15% — psychologically brutal: occasional 60-tick wins carry 32-tick
+  losers. Profit factor 1.62.
+- Strongest variants (small n): naked VPOC first flips (h1800: 30/40 stop/target).
+
+### Rule B — broader fallback: first flip of ANY chart level (~9/day)
+
+Same trigger (first flip today of any tracked level, tolerance 0, accept 180 s), same 32/60 shape.
+Lower quality: expect roughly half the naked-level edge; the short side carried the OOS score
+(11/15 positive), the long side did not (14/24, ~flat).
+
+### Rule C — do NOT trade
+
+- 2nd+ flips of the same level on the same day (except naked variants in Rule A) — chop, ~0 edge.
+- Flip entries in the last ~1 hour of RTH (follow-through collapses after 5.5h into the session).
+- Fading holds/clean rejects standalone. Deep-break or long-break conditioning (see 7: collapsed OOS).
