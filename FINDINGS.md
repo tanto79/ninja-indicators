@@ -126,6 +126,31 @@ Treat break continuation as a follow-up research thread with more data, not a li
 
 ## 7. Context filters: what survives out-of-sample, what doesn't (added after first findings)
 
+### 7.1 Upside check (long-side first flips)
+
+Same walk-forward grid run split by flip direction; every cell also compared to a
+**same-direction, same-context random control** (random long entries on days trading above the
+open, etc.). 10-min horizon, first flip of the level on its side of the open only:
+
+| context | signal n | edge vs same-context control (r8 / r20) |
+|---------|----------|------------------------------------------|
+| LONG first flip, day up >5 pts | 991 | +0.116 / +0.076 |
+| LONG first flip, day flat ±5 pts | 161 | +0.100 / +0.075 |
+| SHORT first flip, day down >5 pts | 795 | +0.134 / +0.139 |
+| SHORT first flip, day flat ±5 pts | 170 | +0.176 / +0.253 |
+
+So the long side has a **real but smaller edge** (~half the short side's at the 20-tick horizon).
+Two additional structural facts:
+
+- **First flips are always direction-aligned with the day.** In 2,117 first flips, not one
+  counter-trend first flip existed: a level's first flip up never happened with the market more
+  than 2 ticks above-zero on the wrong side, and vice versa (today's profile levels are built from
+  the same tape, so their first flip follows the day's flow). Counter-trend flips only exist as 2nd+
+  flips of a level (chop), which is consistent with "first flip" being the quality filter.
+- Because of that, the practical long-side setup is just the mirror: first flip up on a day already
+  trading above its open → buy continuation. It's tradeable, expect roughly half the short side's
+  follow-through in this sample (and the sample leaned down).
+
 All flip signals were filtered on context and re-validated walk-forward (best cell chosen on the
 first 30 days, judged blind on the last 14). Summary across all cells of each subset:
 
