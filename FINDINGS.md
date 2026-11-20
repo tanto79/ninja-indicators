@@ -126,6 +126,36 @@ Treat break continuation as a follow-up research thread with more data, not a li
 
 ## 7. Context filters: what survives out-of-sample, what doesn't (added after first findings)
 
+### 7.2 Source-session check: which prior levels (user's corrected framing)
+
+Important clarification recorded for fidelity: **the replay never tested a current session's own
+developing levels** — levels activate only after their source session closes (`study.py` filter
+`source_session_id != view session`). What the aggregate results did include, though, were levels
+from **all** completed sessions (up to ~60 back), while the user's chart only shows levels from the
+last 20 sessions (`MaxSessionsToShow = 20`). Re-slicing to the chart-faithful universe
+(source-session gap ≤ 20) and splitting by source:
+
+| subset (first flips) | n | OOS-positive cells | mean IS | mean OOS |
+|---|---|---|---|---|
+| **1st flip on a naked level (gap ≤ 20)** | 460 | **13/15** | +4.30 | **+6.05** |
+| 1st flip on any chart-visible level (gap ≤ 20) | 1,194 | 22/27 | +2.17 | +3.15 |
+| ... short side | 555 | 11/15 | +3.23 | +5.11 |
+| ... long side | 639 | 14/24 | +2.60 | +0.08 |
+| prev-Globex (overnight) only | 151 | too few for walk-forward cells | pooled r20 0.554 | − |
+| prev-RTH (yesterday) only | 125 | too few for walk-forward cells | pooled r20 0.493 | − |
+
+Pooled 10-min reach (control 0.744 / 0.442):
+
+- first flip on **naked** levels: r8 0.903, r20 **0.616** (+17 pts over control) — the strongest
+  level-attribute found in the study
+- first flip on overnight-Globex levels: r20 0.554
+- first flip on yesterday-RTH levels: r20 0.493
+
+So the user's framing sharpens the top candidate: **the first flip of a naked level is the A+ trade
+of this study** (~3–4/day at n=460 over 2 months, OOS-positive in 13/15 cell families, and OOS mean
+*above* IS mean). Consistent with market microstructure: a level that has never been traded is the
+one where resting interest is real.
+
 ### 7.1 Upside check (long-side first flips)
 
 Same walk-forward grid run split by flip direction; every cell also compared to a
