@@ -124,7 +124,38 @@ Treat break continuation as a follow-up research thread with more data, not a li
 3. **Break continuation** is on watch only until more months confirm.
 4. Expect short-side signals to perform better in this sample.
 
-## 7. Caveats (read before live-trading any of this)
+## 7. Context filters: what survives out-of-sample, what doesn't (added after first findings)
+
+All flip signals were filtered on context and re-validated walk-forward (best cell chosen on the
+first 30 days, judged blind on the last 14). Summary across all cells of each subset:
+
+| subset | signals | OOS-positive cells | median OOS (ticks) | mean OOS (ticks) |
+|--------|---------|--------------------|--------------------|------------------|
+| all flips                       | 6,777 | 22/27 | +0.66 | +0.67 |
+| flip after deep break (13t+)    |   737 |  4/15 | −0.76 | −1.16 |
+| flip after long break (>180 s)  |   763 |  3/15 | −0.76 | −1.08 |
+| **first flip on that level**    | 2,117 | 22/27 | +1.03 | +1.64 |
+| flips in first 90 min           | 1,713 | 21/27 | +0.97 | +2.84 |
+| short-side flips                | 3,325 | 22/27 | +1.62 | +1.33 |
+| **short-side + first flip**     |   965 | 13/15 | **+3.00** | **+3.21** |
+
+Reads:
+
+- **Deep/long prior-break filters are traps.** They looked +10 points better on pooled 10-min
+  reach rates, then went negative out-of-sample. Classic data-mining artifact — this is precisely
+  how the "edge" disappears for other people's research, too.
+- **First flip on a level** (a level that flips back and forth repeatedly is a fake or exhausted
+  level) improves OOS performance and keeps decent sample size.
+- **Short side** follow-through held up and matched the direction asymmetry in §3.
+- **The short-side + first-flip combo is the best candidate found so far**: 13/15 cells
+  OOS-positive, ~+3 ticks/trade mean, and OOS mean actually *exceeded* IS mean. Frequency is
+  ~7 trades/day across all RTHC/VPOC/etc. levels pooled.
+- **Important honesty note:** these filters were picked after seeing the pooled data, so the
+  OOS numbers above are a partial validation, not a clean one. The next calendar month of tick
+  data is the true out-of-sample test. Keep the filter list small (the two above) and resist
+  adding more until they earn it.
+
+## 8. Caveats (read before live-trading any of this)
 
 - **2 months, one sample.** 44 RTH days of signals + walk-forward; regimes change. Re-run monthly as
   new tick data lands (rename with new `date=YYYY-MM-DD/ticks.parquet` partitions).
@@ -138,7 +169,7 @@ Treat break continuation as a follow-up research thread with more data, not a li
 - The signal-vs-level MFE convention and the 8-tick de-clustering count ~690 holds/day —
   stricter than raw chop (previous study's 7,600/day) but not a guarantee of independence.
 
-## 8. How this was produced
+## 9. How this was produced
 
 - `results_v2/events.parquet` — full re-replay of roles with the fixed state machine (the original
   pipeline missed the Flipped branch, so reclaims were double-counted as flips).
