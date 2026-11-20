@@ -19,7 +19,7 @@ using SharpDX.DirectWrite;
 
 // Enums live at global scope so NinjaScript's generated wrappers (Strategies / MarketAnalyzerColumns namespaces) can resolve them.
     /// <summary>Controls how value area boundaries are rendered on the volume profile.</summary>
-    public enum STVPDisplayStyle
+    public enum AntonsonDisplayStyle
     {
         /// <summary>Draw outline rectangles around each value area (original behaviour).</summary>
         Box,
@@ -30,7 +30,7 @@ using SharpDX.DirectWrite;
     /// <summary>Stroke style for individual value area level lines.</summary>
 
     /// <summary>Controls what metric the volume profile bars display.</summary>
-    public enum STVPBarDisplayMode
+    public enum AntonsonBarDisplayMode
     {
         /// <summary>Bars are sized and colored by total traded volume at each price (default).</summary>
         Volume,
@@ -41,7 +41,7 @@ using SharpDX.DirectWrite;
     }
 
     /// <summary>How aggressive buy vs sell is assigned on each trade.</summary>
-    public enum STVPTradeClassification
+    public enum AntonsonTradeClassification
     {
         /// <summary>Quote rule: price ≥ ask → buy, price ≤ bid → sell, else Lee-Ready tick rule (default, NT-style).</summary>
         QuoteRule,
@@ -50,7 +50,7 @@ using SharpDX.DirectWrite;
     }
 
     /// <summary>Controls whether the volume/TPO profile resets each trading session or each week.</summary>
-    public enum STVPProfilePeriod
+    public enum AntonsonProfilePeriod
     {
         /// <summary>One profile per trading session (default).</summary>
         Session,
@@ -59,7 +59,7 @@ using SharpDX.DirectWrite;
     }
 
     /// <summary>How "RTH" is defined for RTH tracking.</summary>
-    public enum STVPRthMode
+    public enum AntonsonRthMode
     {
         /// <summary>Default. Full Session when the chart's template session opens inside the RTH window (no overnight / pre-RTH part, e.g. HE, LE); otherwise Manual (e.g. ES / NQ with a Globex overnight session).</summary>
         Auto,
@@ -395,7 +395,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "RTH Mode",
                  Description = "Auto (default) = detects it per contract from the chart's trading hours template: if the session opens inside the RTH window below (no overnight part, e.g. HE / LE) the whole session is RTH, otherwise the RTH Start / End times are used (index futures with a Globex overnight session). Manual = always use RTH Start / End. Full Session = always treat the whole template session as RTH. When the whole session is RTH, nothing is classed as Globex.",
                  Order = 0, GroupName = "1. RTH Settings")]
-        public STVPRthMode RthMode { get; set; }
+        public AntonsonRthMode RthMode { get; set; }
 
         [Display(Name = "Merge Template Sessions Into One Trading Day",
                  Description = "OFF (default): one profile per session in the trading hours template. ON: if the template splits a trading day into separate sessions (e.g. a break between the overnight and day segments), keep them in ONE profile. Leave OFF for index futures and for single-session markets like HE / LE.",
@@ -420,7 +420,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Profile Period",
                  Description = "Session = one volume/TPO profile per trading day. Weekly = one cumulative profile for the whole trading week (better structural reference on thin markets like HE/LE).",
                  Order = 0, GroupName = "2. Volume Profile Settings")]
-        public STVPProfilePeriod ProfilePeriod { get; set; }
+        public AntonsonProfilePeriod ProfilePeriod { get; set; }
 
         #endregion
 
@@ -469,7 +469,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "VA Display Style",
                  Description = "Box: draw outline rectangles around each value area (original). Lines: draw a high and low horizontal line for each value area, spanning the full session width.",
                  Order = 20, GroupName = "3. Display Options")]
-        public STVPDisplayStyle VADisplayStyle { get; set; }
+        public AntonsonDisplayStyle VADisplayStyle { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Show LVN Extension Fill",
@@ -493,13 +493,13 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Display(Name = "Volume Bar Display Mode",
                  Description = "Volume: bars sized and colored by total traded volume (default). Delta: bars sized by |buy−sell| tick delta and colored green/red by sign. BidAsk: footprint shows Buy on the LEFT and Sell on the RIGHT (same order as SuperDOM) with volume profile on the far right.",
                  Order = 24, GroupName = "3. Display Options")]
-        public STVPBarDisplayMode VolumeBarDisplayMode { get; set; }
+        public AntonsonBarDisplayMode VolumeBarDisplayMode { get; set; }
 
         [NinjaScriptProperty]
         [Display(Name = "Trade Classification",
                  Description = "Midpoint (default): close > (bid+ask)/2 → buy, else sell — same rule as GemsTraderLadder. QuoteRule: price ≥ ask → buy, price ≤ bid → sell, else tick rule. Use Ticks Per Row = 1 for price-level parity with the ladder.",
                  Order = 244, GroupName = "3. Display Options")]
-        public STVPTradeClassification TradeClassification { get; set; }
+        public AntonsonTradeClassification TradeClassification { get; set; }
 
         [NinjaScriptProperty]
         [Range(6, 16)]
@@ -934,11 +934,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // RTH sub-period times (ES / NQ defaults — set to match your chart template)
                 RTHStartTime = new TimeSpan(8, 30, 0);
                 RTHEndTime   = new TimeSpan(16, 0, 0);
-                RthMode      = STVPRthMode.Auto;
+                RthMode      = AntonsonRthMode.Auto;
                 MergeTemplateSessions = false;
 
                 // Profile settings
-                ProfilePeriod         = STVPProfilePeriod.Session;
+                ProfilePeriod         = AntonsonProfilePeriod.Session;
                 TicksPerRow           = 1;   // 1 tick per row so buy/sell numbers match SuperDOM ladder price levels
                 MaxSessionsToShow     = 20;
 
@@ -954,7 +954,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 ShowVolumeLabels       = true;
                 VolumeFontSize         = 8;
 
-                VADisplayStyle         = STVPDisplayStyle.Box;
+                VADisplayStyle         = AntonsonDisplayStyle.Box;
                 ShowLVNExtension       = false;  // off by default — enable when needed
                 ShowCurrentVolumeLevels = true;   // hide current session volume lines when using prior levels only
                 ShowLevelZones         = true;   // level zones (VP + TPO) — all-or-nothing toggle
@@ -969,9 +969,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LevelRoleResistanceColor     = System.Windows.Media.Brushes.Red;
                 LevelRoleBreakingColor       = System.Windows.Media.Brushes.Gold;
                 HvnLvnOnlyMode         = false;  // off by default — shows all node types (HVN + MVN + LVN)
-                VolumeBarDisplayMode   = STVPBarDisplayMode.Volume;  // default to standard volume bars
+                VolumeBarDisplayMode   = AntonsonBarDisplayMode.Volume;  // default to standard volume bars
 
-                TradeClassification    = STVPTradeClassification.Midpoint;  // same rule as GemsTraderLadder
+                TradeClassification    = AntonsonTradeClassification.Midpoint;  // same rule as GemsTraderLadder
                 LabelFontSize          = 9;
 
                 CurrentSessionVbPWidth    = 80;
@@ -1176,7 +1176,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 double tickAsk = BarsArray[1].GetAsk(CurrentBars[1]);
                 bool   hasQuotes = tickBid > 0 && tickAsk > 0 && tickAsk >= tickBid;
 
-                if (TradeClassification == STVPTradeClassification.Midpoint && hasQuotes)
+                if (TradeClassification == AntonsonTradeClassification.Midpoint && hasQuotes)
                 {
                     double midpoint = (tickAsk + tickBid) / 2.0;
                     if (tickAsk == tickBid)
@@ -1393,7 +1393,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             lastKeyEnd   = sessionIterator.ActualSessionEnd;
 
             DateTime key;
-            if (ProfilePeriod == STVPProfilePeriod.Weekly)
+            if (ProfilePeriod == AntonsonProfilePeriod.Weekly)
             {
                 // Weekly key = Monday of the exchange trading week, NOT calendar date of session begin.
                 // Overnight products (ZS, ES, etc.): Sunday evening belongs to Monday's trading day, so the
@@ -1442,8 +1442,8 @@ namespace NinjaTrader.NinjaScript.Indicators
         /// </summary>
         private bool UseFullSessionRth()
         {
-            if (RthMode == STVPRthMode.FullSession) return true;
-            if (RthMode == STVPRthMode.Manual) return false;
+            if (RthMode == AntonsonRthMode.FullSession) return true;
+            if (RthMode == AntonsonRthMode.Manual) return false;
             // Auto: the template session opens inside the RTH window => there is no overnight / pre-RTH part.
             if (templateDayBegin == DateTime.MinValue) return false;
             TimeSpan b = templateDayBegin.TimeOfDay;
@@ -2045,7 +2045,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private void RefreshFeatureGates()
         {
             gateNeedBidAsk =
-                VolumeBarDisplayMode != STVPBarDisplayMode.Volume;
+                VolumeBarDisplayMode != AntonsonBarDisplayMode.Volume;
 
             gateAnyTpo =
                 ShowTPOLetters || ShowTPOPOC || ShowTPOVAHVAL
@@ -2841,7 +2841,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 : (startX + sessionWidth);
 
             // Volume VA outlines — Box mode draws inset rectangles; Lines mode draws H/L horizontals
-            if (VADisplayStyle == STVPDisplayStyle.Box)
+            if (VADisplayStyle == AntonsonDisplayStyle.Box)
             {
                 // Box mode: 4 DrawLine calls per band (top, left, bottom, right) so each H and L
                 // boundary carries its own color, width, and stroke style independently.
@@ -2858,7 +2858,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     RenderTarget.DrawLine(new SharpDX.Vector2(bR, hY), new SharpDX.Vector2(bR, lY), vvahLineBrush, 2); // right
                 }
             }
-            else // STVPDisplayStyle.Lines — each of the 6 VA boundaries is an independent horizontal line
+            else // AntonsonDisplayStyle.Lines — each of the 6 VA boundaries is an independent horizontal line
             {
                 float lineLeft  = startX;
                 // Current session: extend to the far right edge of the chart
@@ -2908,7 +2908,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 }
             }
 
-            if (VolumeBarDisplayMode == STVPBarDisplayMode.Delta)
+            if (VolumeBarDisplayMode == AntonsonBarDisplayMode.Delta)
             {
                 // ── DELTA MODE ────────────────────────────────────────────────────────────
                 // Layer 1 — standard volume bars drawn first so the familiar HVN/LVN/VPOC
@@ -2988,7 +2988,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                     }
                 }
             }
-            else if (VolumeBarDisplayMode == STVPBarDisplayMode.BidAsk)
+            else if (VolumeBarDisplayMode == AntonsonBarDisplayMode.BidAsk)
             {
                 float fpRight = rightEdge - vpWidth;
 
@@ -3798,17 +3798,6 @@ namespace NinjaTrader.NinjaScript.Indicators
             if (deltaNegativeBrush    != null) { deltaNegativeBrush.Dispose();    deltaNegativeBrush    = null; }
             if (deltaPositiveFillBrush != null) { deltaPositiveFillBrush.Dispose(); deltaPositiveFillBrush = null; }
             if (deltaNegativeFillBrush != null) { deltaNegativeFillBrush.Dispose(); deltaNegativeFillBrush = null; }
-
-            if (buyingImbalanceBrush   != null) { buyingImbalanceBrush.Dispose();   buyingImbalanceBrush   = null; }
-            if (sellingImbalanceBrush  != null) { sellingImbalanceBrush.Dispose();  sellingImbalanceBrush  = null; }
-            if (buyZoneFillBrush         != null) { buyZoneFillBrush.Dispose();         buyZoneFillBrush         = null; }
-            if (sellZoneFillBrush        != null) { sellZoneFillBrush.Dispose();        sellZoneFillBrush        = null; }
-            if (buyZoneBorderBrush       != null) { buyZoneBorderBrush.Dispose();       buyZoneBorderBrush       = null; }
-            if (sellZoneBorderBrush      != null) { sellZoneBorderBrush.Dispose();      sellZoneBorderBrush      = null; }
-            if (buyZoneFillStrongBrush   != null) { buyZoneFillStrongBrush.Dispose();   buyZoneFillStrongBrush   = null; }
-            if (sellZoneFillStrongBrush  != null) { sellZoneFillStrongBrush.Dispose();  sellZoneFillStrongBrush  = null; }
-            if (buyZoneBorderStrongBrush != null) { buyZoneBorderStrongBrush.Dispose(); buyZoneBorderStrongBrush = null; }
-            if (sellZoneBorderStrongBrush!= null) { sellZoneBorderStrongBrush.Dispose();sellZoneBorderStrongBrush= null; }
 
             if (volumeBarOutlineBrush != null) { volumeBarOutlineBrush.Dispose(); volumeBarOutlineBrush = null; }
 
