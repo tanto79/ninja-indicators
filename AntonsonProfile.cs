@@ -287,6 +287,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private DateTime roleLastTickTime = DateTime.MinValue;
         private double   roleLastTickPrice = double.NaN;   // last traded price, for the AMT readout
         private readonly List<RoleTracker> roleTrackers = new List<RoleTracker>();
+        private readonly List<FlipLineRecord> flipLines = new List<FlipLineRecord>();
+        private readonly HashSet<string> flipLineKeys = new HashSet<string>();
+        private readonly object flipLinesLock = new object();
         private int            roleTrackerSessionCount = -1;
         private SessionProfile roleTrackerMostRecent;
         private DateTime       roleTrackerCurrentStart = DateTime.MinValue;
@@ -632,6 +635,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Range(0.0, 24.0)]
         [Display(Name = "AMT Stand-Down Hour (local)", Description = "Chart-local hour at/after which tags read 'late – stand down' (last hour of RTH). Default 15.0 = 3 PM when the chart runs in Central Time", Order = 12, GroupName = "3B. Level Roles")]
         public double AmtStandDownHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Flip Lines", Description = "When a level flips (price holds beyond it for Role Accept Seconds), draw a horizontal line at the level: green = flipped to support, red = flipped to resistance. Live session only", Order = 13, GroupName = "3B. Level Roles")]
+        public bool ShowFlipLines { get; set; }
 
         #endregion
 
@@ -997,6 +1004,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 AmtAcceptThreshold           = 0.33;    // volume at level < 33% of today's POC row = rejection (go)
                 AmtMinProfileVolume          = 250000;  // today's profile too thin to read — trust the role
                 AmtStandDownHour             = 15.0;    // chart-local: last hour of RTH → stand down
+                ShowFlipLines                = true;    // horizontal line at the level when a flip confirms (180s held)
                 HvnLvnOnlyMode         = false;  // off by default — shows all node types (HVN + MVN + LVN)
                 VolumeBarDisplayMode   = AntonsonBarDisplayMode.Volume;  // default to standard volume bars
 
@@ -2127,9 +2135,17 @@ namespace NinjaTrader.NinjaScript.Indicators
         {
             public LevelRoleState State;
             public double         Level;
+            public string         Key;         // full level key, for flip-line dedup
             public string         TypeText;    // HI/LO/RTHC/VPOC/VVAH/VVAL/TPOPOC/TPOVAH/TPOVAL
             public bool           IsNaked;     // source session is older than the most recent completed one
             public bool           IsMostRecent;// source session is the previous (most recent completed) session
+        }
+
+        private class FlipLineRecord
+        {
+            public double   Price;   // the level's price
+            public DateTime Time;    // tick-time the flip confirmed (price held beyond it for Role Accept Seconds)
+            public int      Side;    // +1 flipped to support, -1 flipped to resistance
         }
 
         private string RoleKey(SessionProfile s, string type)
@@ -2197,9 +2213,30 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RoleTracker t = roleTrackers[i];
                 if (t.State.Frozen) continue;   // its session has ended: keep the last calculation
                 t.State.LastTick = tickTime;
+                int flipsBefore = t.State.Flips;
                 RunLevelRoleMachine(t.State, t.Level, tickPrice, touchPrevPrice, tickTime, band);
+                if (t.State.Flips != flipsBefore)
+                    RecordFlipLine(t, tickPrice, tickTime);
                 if (ShowAmtReadout)
                     ComputeAmtReadout(t, tickTime);
+            }
+        }
+
+        /// <summary>
+        /// A level just flipped (price held beyond it for LevelRoleAcceptSeconds): remember
+        /// a horizontal line at the level for the live session, deduped per (level, flip, time).
+        /// </summary>
+        private void RecordFlipLine(RoleTracker t, double tickPrice, DateTime flipTime)
+        {
+            string key = t.Key + "#" + t.State.Flips.ToString() + "#" + flipTime.Ticks.ToString();
+            lock (flipLinesLock)
+            {
+                if (!flipLineKeys.Add(key)) return;
+                FlipLineRecord rec = new FlipLineRecord();
+                rec.Price = t.Level;
+                rec.Time  = flipTime;
+                rec.Side  = t.State.Role;
+                flipLines.Add(rec);
             }
         }
 
@@ -2338,6 +2375,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             RoleTracker t = new RoleTracker();
             t.State = st;
             t.Level = level;
+            t.Key   = key;
             t.IsMostRecent = isMostRecent;
             t.IsNaked = !isMostRecent;              // study "naked" = source session older than the previous one
             int typeStart = key.IndexOf('|');
@@ -2624,6 +2662,9 @@ namespace NinjaTrader.NinjaScript.Indicators
                 // Pass 3: current-session level labels at the right margin
                 RenderCurrentSessionLevelLabels(chartControl, chartScale);
 
+                // Pass 4: horizontal lines at prices where a level flipped (live session)
+                RenderFlipLines(chartControl, chartScale);
+
             }
             catch (Exception ex)
             {
@@ -2634,6 +2675,44 @@ namespace NinjaTrader.NinjaScript.Indicators
                     + "  sessions.Count=" + (sessions != null ? sessions.Count.ToString() : "null")
                     + "  CurrentBar=" + CurrentBar);
                 Print("=== END EXCEPTION ===");
+            }
+        }
+
+        // ---- Pass 4: flip lines ----
+
+        /// <summary>
+        /// Horizontal line at every level that flipped in the live session: from the flip
+        /// point to the right edge. Green = flipped to support (price accepted above a
+        /// resistance), red = flipped to resistance. Only the live session's flips are
+        /// drawn — older ones stay clutter-free behind the role tags.
+        /// </summary>
+        private void RenderFlipLines(ChartControl chartControl, ChartScale chartScale)
+        {
+            if (!ShowFlipLines) return;
+            if (currentSession == null || roleSupportBrush == null || roleResistanceBrush == null) return;
+
+            FlipLineRecord[] snapshot;
+            lock (flipLinesLock)
+            { snapshot = flipLines.ToArray(); }
+
+            int fullX = ChartPanel != null
+                ? (int)(ChartPanel.X + ChartPanel.W)
+                : SafeGetXByBarIndex(ChartBars.Count - 1) + 5;
+
+            for (int i = 0; i < snapshot.Length; i++)
+            {
+                FlipLineRecord rec = snapshot[i];
+                if (rec.Time < currentSession.StartTime) continue;
+
+                int x = chartControl != null
+                    ? chartControl.GetXByTime(rec.Time)
+                    : SafeGetXByBarIndex(currentSession.StartBarIndex);
+                if (ChartPanel != null && x < ChartPanel.X) x = ChartPanel.X;   // flip scrolled off the left: start at the panel edge
+                if (x > fullX) continue;
+
+                float y = (float)chartScale.GetYByValue(rec.Price);
+                SharpDX.Direct2D1.Brush lineBrush = rec.Side < 0 ? roleResistanceBrush : roleSupportBrush;
+                RenderTarget.DrawLine(new SharpDX.Vector2(x, y), new SharpDX.Vector2(fullX, y), lineBrush, 2);
             }
         }
 
