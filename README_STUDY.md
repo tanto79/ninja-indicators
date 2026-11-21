@@ -36,6 +36,26 @@ new data loaded correctly; the grids won't be updated).
 The study uses every `date=YYYY-MM-DD/ticks.parquet` folder in the repo. Drop new date folders in
 (today's data exported from NinjaTrader the same way as before), double-click, done.
 
+## Converting a new NT8 tick text file (convert only, no analysis)
+
+If you download more data from NinjaTrader 8 as one big tick text file, you only need the
+conversion step — not the full study:
+
+1. Double-click `RUN_CONVERT.bat`. It converts every tick text file sitting in `data\ticks\`
+   (drop them there first), or run it on one file anywhere:
+   `python convert_only.py C:\path\to\yourfile.txt`
+2. Each day found in the file becomes its own `date=YYYY-MM-DD/ticks.parquet` folder in the
+   repo root, in exactly the format the study reads. Lines that don't parse are skipped.
+3. Then either double-click `RUN_STUDY.bat` to analyze on this PC, or push the repo to GitHub
+   with git and ask me to run the analysis.
+
+Expected line format (same as the original export): `YYYYMMDD HHMMSS fff;last;bid;ask;volume`
+e.g. `20260921 083000 123;6105.25;6105.00;6105.50;4`. If your NT8 export looks different,
+send the first 2-3 lines and the converter will be adapted.
+
+If a `date=` folder already exists (e.g. a Globex evening split across days), the new rows are
+merged into it and re-sorted — nothing is lost or duplicated.
+
 ## Adding more data (e.g., the Sep 2026 contract)
 
 Your current dataset (Dec-26 contract) starts 2026-09-21. To extend the study back into Jun–Sep
