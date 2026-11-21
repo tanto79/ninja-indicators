@@ -637,7 +637,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         public double AmtStandDownHour { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Flip Lines", Description = "When a level flips (price holds beyond it for Role Accept Seconds), draw a horizontal line at the level: green = flipped to support, red = flipped to resistance. Live session only", Order = 13, GroupName = "3B. Level Roles")]
+        [Display(Name = "Flip Lines", Description = "When a level flips (price holds beyond it for Role Accept Seconds), draw a horizontal line at the PRICE where the flip confirmed — green = flipped to support, red = flipped to resistance. Live session only", Order = 13, GroupName = "3B. Level Roles")]
         public bool ShowFlipLines { get; set; }
 
         #endregion
@@ -1004,7 +1004,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 AmtAcceptThreshold           = 0.33;    // volume at level < 33% of today's POC row = rejection (go)
                 AmtMinProfileVolume          = 250000;  // today's profile too thin to read — trust the role
                 AmtStandDownHour             = 15.0;    // chart-local: last hour of RTH → stand down
-                ShowFlipLines                = true;    // horizontal line at the level when a flip confirms (180s held)
+                ShowFlipLines                = true;    // horizontal line at the flip-confirmation price (180s held)
                 HvnLvnOnlyMode         = false;  // off by default — shows all node types (HVN + MVN + LVN)
                 VolumeBarDisplayMode   = AntonsonBarDisplayMode.Volume;  // default to standard volume bars
 
@@ -2224,7 +2224,10 @@ namespace NinjaTrader.NinjaScript.Indicators
 
         /// <summary>
         /// A level just flipped (price held beyond it for LevelRoleAcceptSeconds): remember
-        /// a horizontal line at the level for the live session, deduped per (level, flip, time).
+        /// a horizontal line at the PRICE the moment the flip confirmed — not back at the
+        /// level. After 180s of holding beyond it, price is usually several ticks away from
+        /// the level, and that confirmation price is the trade reference. Deduped per
+        /// (level, flip, time).
         /// </summary>
         private void RecordFlipLine(RoleTracker t, double tickPrice, DateTime flipTime)
         {
@@ -2233,7 +2236,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             {
                 if (!flipLineKeys.Add(key)) return;
                 FlipLineRecord rec = new FlipLineRecord();
-                rec.Price = t.Level;
+                rec.Price = tickPrice;   // price at the moment the 180s expired = the tradeable reference
                 rec.Time  = flipTime;
                 rec.Side  = t.State.Role;
                 flipLines.Add(rec);
@@ -2681,10 +2684,11 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ---- Pass 4: flip lines ----
 
         /// <summary>
-        /// Horizontal line at every level that flipped in the live session: from the flip
-        /// point to the right edge. Green = flipped to support (price accepted above a
-        /// resistance), red = flipped to resistance. Only the live session's flips are
-        /// drawn — older ones stay clutter-free behind the role tags.
+        /// Horizontal line at every level that flipped in the live session, drawn at the
+        /// PRICE where the flip confirmed (after 180s held beyond the level, price is
+        /// usually several ticks past it) — from the flip point to the right edge.
+        /// Green = flipped to support (price accepted above a resistance), red = flipped
+        /// to resistance. Only the live session's flips are drawn.
         /// </summary>
         private void RenderFlipLines(ChartControl chartControl, ChartScale chartScale)
         {
