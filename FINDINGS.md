@@ -384,3 +384,41 @@ sitting in HVNs, and unsupported for longs.
 - tables/vbp_node_summary.csv - volume node / side cuts
 - tables/timstyle_*.csv - 16-tick scalps cut by window/stop
 - parquet detail (not committed): heldn_mfe.parquet, vbp_fills.parquet, align_*_trades.parquet, chartstyle_trades.parquet
+
+### 11.6 AMT acceptance test - the user's actual method, validated
+
+The user's stated method (Dalton-style auction theory): the current session reacts to ESTABLISHED
+levels (previous/naked session levels, never developing ones), and the tell is the current session's
+DEVELOPING volume profile - an established level that sits above today's developing value area where
+TODAY'S volume is NOT building at the level's price is being REJECTED by the auction; volume
+accepting at the price means the auction has migrated there.
+
+Mechanization (no lookahead): at every limit fill at a prior/naked level,
+  acceptance = volume TODAY at the level's price bar / volume TODAY at today's developing POC
+  (developing profile as of the last completed 30-min TPO boundary; first boundary excluded)
+  position   = level bar vs today's developing 70% value area (above / in / below)
+Travel measured as MFE within 5 minutes of the fill.
+
+BOUNCE SHORTS, all 44 days (n=177k fills): median MFE / reach +32 by acceptance x position
+  low-accept + above-VA :  15.0 tk / 23.7%   <- rejection at an old level above value = the edge
+  mid-accept  + above-VA :  13.0 tk / 16.7%
+  high-accept  + above-VA:   9.0 tk / 14.1%   <- acceptance = the level is about to go
+
+RETEST SHORTS, all 44 days (n=154k): same ordering - low-accept/above +32 = 19.6% vs
+high-accept/above 4.5%.
+
+LIVE WEEK (Nov 16-19), the user's exact scenario:
+  bounce short, low acceptance, level above today's developing VA: n=52 (~13/trading day),
+  median MFE 103 ticks, 100% reached +16, only 27% hit an 8t stop within 60s.
+  bounce short, HIGH acceptance, level above VA: n=73, median MFE 8 ticks, 14% reached +16,
+  86% hit the 8t stop. Same levels, same side - acceptance flips the outcome.
+
+CAVEATS:
+- The effect is a SHORT-side effect. Longs show no reliable acceptance gradient (the clean-tops /
+  sloppy-bottoms asymmetry again).
+- Low-acceptance/shorts get part of their edge on high-range days; on the all-days cut it is real
+  but modest (15 vs 9-13 median).
+- This validates the technique, not a mechanical system: the n=52 live-week cell includes overlap
+  (multiple fills at the same level-day). De-clustering before trading it is mandatory.
+
+tables/amt_acceptance_summary.csv - full acceptance x position grid
