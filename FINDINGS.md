@@ -242,12 +242,16 @@ Cost model: 1-tick slippage on market entry, 1-tick on the stop exit, target exi
 
 - A *naked* level = one the market has never traded since its session completed (the green
   "naked" labels / prior H-L / RTHC that have sat untouched).
-- **LONG:** a support-side level (price above it) is traded by the market for the first time,
-  price breaks UP through it, and holds above for 180 s → indicator prints Flipped →
-  buy. Stop 32 ticks (8 pts) below entry. Target 60 ticks (15 pts). Exit at market if neither hits
-  within 10 minutes.
-- **SHORT:** a resistance-side level breaks DOWN and holds for 180 s → Flipped → sell.
-  Stop 32 ticks (8 pts) above entry. Target 60 ticks (15 pts). Same 10-min time stop.
+- **LONG:** a level acting as **RESISTANCE** above the market (the level is above the opening
+  price; price has kept rejecting below it) breaks **up** through it and holds above for 180 s →
+  it flips to **support** → **buy the breakout**. Stop 32 ticks (8 pts) below entry. Target
+  60 ticks (15 pts). Exit at market if neither hits within 10 minutes.
+- **SHORT:** a level acting as **SUPPORT** below the market breaks **down** through it and holds
+  below for 180 s → it flips to **resistance** → **sell the breakdown**. Stop 32 ticks (8 pts)
+  above entry. Target 60 ticks (15 pts). Same 10-min time stop.
+
+  (In every case the direction of the trade is the direction price pushed through and held — the
+  role after the flip is what the level becomes, support or resistance as on the chart label.)
 - Expected value: +5.4 ticks/trade gross, **≈ +3.0 ticks net ≈ $38/contract** across 464 signals
   (244 short / 220 long). Win rate 15% — psychologically brutal: occasional 60-tick wins carry 32-tick
   losers. Profit factor 1.62.
@@ -255,7 +259,8 @@ Cost model: 1-tick slippage on market entry, 1-tick on the stop exit, target exi
 
 ### Rule B — broader fallback: first flip of ANY chart level (~9/day)
 
-Same trigger (first flip today of any tracked level, tolerance 0, accept 180 s), same 32/60 shape.
+Same trigger (first flip today of any tracked level — resistance up-flips to support = long,
+support down-flips to resistance = short, tolerance 0, accept 180 s), same 32/60 shape.
 Lower quality: expect roughly half the naked-level edge; the short side carried the OOS score
 (11/15 positive), the long side did not (14/24, ~flat).
 
