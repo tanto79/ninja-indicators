@@ -460,3 +460,20 @@ Memory anchors, in trader units:
   77% stop-hit. Dodge.
 - "Held xN" is decoration: the N does not predict travel size.
 - Confirmation modes (time/ticks/volume) don't change flip quality; keep 180s.
+
+### 11.7 Elevator down, stairs up - measured
+
+Same 581k limit fills, travel capped at a 10-minute window:
+
+| Sample | Side | median MFE 10m | reach +16 | median time to +16 |
+|---|---|---|---|---|
+| all 44 days | short | 18 tk | 56% | 138s |
+| all 44 days | long | 17 tk | 53% | 139s |
+| live week | short | **51 tk** | **85%** | 53s |
+| live week | long | 25 tk | 67% | 60s |
+
+Reconciles the paradox "ES drifts up forever yet shorts trade better": the upward drift is a
+multi-hour/multi-day accumulation (stairs) invisible at the scalp horizon, while downside waves are
+concentrated bursts (elevator). Pooled samples near-tie because balance/grind weeks feed the longs;
+imbalanced weeks (like the live week) double the short side. The AMT acceptance read is effectively a
+regime detector for which mode the session is in.
