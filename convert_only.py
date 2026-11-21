@@ -22,9 +22,21 @@ from pathlib import Path
 
 import pandas as pd
 
-from level_role.ticks import _parse_line
-
+# Works no matter which folder inside the repo the script is in: walk up until the
+# level_role package is next to us, then import from there.
 ROOT = Path(__file__).resolve().parent
+while ROOT != ROOT.parent and not (ROOT / "level_role" / "ticks.py").exists():
+    ROOT = ROOT.parent
+if not (ROOT / "level_role" / "ticks.py").exists():
+    raise SystemExit(
+        "Could not find the level_role folder.\n"
+        "Put this script anywhere inside the repo folder (the one that contains\n"
+        "level_role\\ticks.py, e.g. C:\\Users\\timan\\Desktop\\LevelRoleStudy)."
+    )
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from level_role.ticks import _parse_line
 
 
 def convert_file(path: Path, out_root: Path) -> int:
