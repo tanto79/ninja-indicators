@@ -422,3 +422,41 @@ CAVEATS:
   (multiple fills at the same level-day). De-clustering before trading it is mandatory.
 
 tables/amt_acceptance_summary.csv - full acceptance x position grid
+
+## 12. The 10-second pre-trade checklist (the distillation of this study)
+
+Read top to bottom at any level the chart puts in front of you. First NO means no trade.
+
+1. ESTABLISHED LEVEL? Is this level defined by a PREVIOUS session (prior-day VPOC/VAH/VAL/HI/LO/RTHC)
+   or a NAKED level from an older session? Current-session developing levels are unconfirmed - the
+   44-session data has no vote on them. No -> no trade.
+2. SHORT OR LONG? The acceptance/rejection read only has a proven edge on SHORTS (clean tops,
+   sloppy bottoms - longs show no reliable gradient in any cut). Longs need Rule A instead
+   (see 6). Short -> continue.
+3. WHERE IS TODAY'S DEVELOPING VALUE? Level above today's developing 70% value area (as of NOW,
+   not end of day)? No -> step 4. Yes -> continue.
+4. ACCEPTING OR REJECTING? Look at TODAY's VbP: volume traded today at the level's price bar vs
+   today's POC bar. Roughly a third of POC volume or less -> rejection -> candidate. Volume
+   near POC levels -> the auction accepted that price -> NO-GO (this cell loses: median 8 tk,
+   86% stop-hit).
+5. WHICH TOUCH? First touch of the level today, or the retest of a freshly flipped level -> good.
+   Same level's 3rd+ touch / a stale flip re-tested many times -> weaker, halve if taken.
+6. LONGS (exception path): only first flip of a NAKED VPOC/prior session level, in the direction of
+   the day's move from the open. Otherwise skip.
+7. TIME CHECK? Last hour of RTH -> stand down (flip follow-through dies in the last ~1.5h and
+   counter-trend fades get destroyed on trend days). Before ~10:00 CT, today's profile is thin -
+   acceptance reads get noisy; weight the level role more than the volume read.
+8. EXECUTION: limit at/just above the level (the chase version pays worse). Stop 8 (mental: if the
+   volume-at-price builds to acceptance while you're in -> that's your real exit signal, get out
+   before 8). First target 16. LVN or confirmed-rejection shorts: take half at 16, trail the rest -
+   the tail on those cells runs to 40-122 ticks on active days.
+9. SPEED: most of the travel happens in the first 2-5 minutes. At +16 with no rejection tail under
+   you, don't hold a flat runner out of hope - the median day gives back by 10 min.
+
+Memory anchors, in trader units:
+- Best cell in 2 months of data: SHORT at an established level above today's developing VA, where
+  TODAY's volume is NOT building at the level. Live week: ~103 ticks median travel, 21% stop-hit.
+- Worst cell: LONG on a flip-retest of a level sitting inside today's HVN. Median travel 4 ticks,
+  77% stop-hit. Dodge.
+- "Held xN" is decoration: the N does not predict travel size.
+- Confirmation modes (time/ticks/volume) don't change flip quality; keep 180s.
