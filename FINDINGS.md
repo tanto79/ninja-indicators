@@ -318,23 +318,45 @@ Grok spec's hold_buckets.csv framing).
 
 ### 11.3 Volume-by-price nodes at the level DO matter - and tops are cleaner than bottoms
 
-Node = the level's price bucket in its source session's volume profile: LVN = bar's volume in the
-bottom quartile of the profile, HVN = top quartile. Bounce fills (limit at level), split side:
+The user reads levels against the CURRENT session's developing volume-by-price profile (how today's
+tape is distributing around the old level), so the node tag is computed from the developing VbP up to
+the last completed 30-min TPO boundary before the fill - no lookahead. Node: LVN = level's price bar
+in the bottom quartile of the local profile, HVN = top quartile. Bounce fills (limit at level),
+split side, live-trading week (Nov 16-19, 28k fills):
 
-| Node / side | n | median MFE | reach +16 | reach +32 |
+| Node / side | n | median MFE | p75 MFE | reach +16 | reach +32 | stop-hit (8t) in 60s |
+|---|---|---|---|---|---|---|
+| HVN short | 870 | **48** | 106 | 79% | **63%** | 75% |
+| LVN short | 479 | 39 | **122** | 71% | 56% | 53% |
+| MID short | 4,193 | 37 | 71 | 90% | 66% | 64% |
+| LVN long | 2,502 | 19 | 39 | 55% | 33% | 69% |
+| MID long | 6,192 | 26 | 46 | 67% | 42% | 71% |
+| HVN long | 3,206 | 28 | 47 | 78% | 45% | 73% |
+
+Retest-after-flip fills, same cut (live week):
+
+| Node / side | n | median MFE | reach +16 | stop-hit (8t) in 60s |
 |---|---|---|---|---|
-| HVN short | 47k | 16 | 50% | **25%** |
-| LVN short | 67k | 14 | 48% | **24%** |
-| MID short | 81k | 15 | 49% | 20% |
-| HVN long | 42k | 14 | 46% | 17% |
-| LVN long | 61k | 15 | 48% | 19% |
-| MID long | 79k | 15 | 48% | 19% |
+| LVN short | 1,563 | 40 | 72% | 57% |
+| MID short | 2,745 | 32 | 81% | 65% |
+| HVN short | 460 | 30 | 80% | **36%** |
+| MID long | 2,020 | 17 | 59% | 60% |
+| LVN long | 615 | 22 | 67% | 57% |
+| HVN long | 223 | **4** | 27% | **77%** |
 
-On the volatile live-trading week (Nov 16-19, 28k fills) the same cut: HVN shorts: median MFE 63 ticks,
-94% reached +16, 89% reached +32. LVN shorts 58% reached +32. Longs, in every node, much weaker
-(37-40% reached +32). The user's read - clean tops, sloppy bottoms - is in the tape at every node type,
-and HVN is the strongest place to short a level in every sample. Retest entries (after a flip) show no
-node effect.
+Cross-check with the SOURCE-session profile instead (where the level was born; 385k fills, all 44
+days): HVN short reach +32 = 25% vs HVN long 17%, LVN short 24% vs LVN long 19% - the side
+asymmetry holds in both framings and in every sample.
+
+Reads:
+- The user's rule "short resistance in a low-volume node or at the high of the volume profile" is in
+  the tape: HVN/LVN shorts carry the biggest right tails (LVN-short p75 = 122 ticks on the live week).
+- "Cautious on support longs" is confirmed in every node and both entry types: longs reach +32 at
+  roughly half the rate of shorts.
+- The single worst cell in the dataset: retest longs at a level sitting in the current session's HVN
+  (median travel 4 ticks, stop hit 77% of the time within 60s) - long retests into a high-volume
+  shelf are the highest-percentage loss reported anywhere in this study.
+- Best stop-survival combo: retest shorts at HVN (80% reach +16, only 36% hit the 8t stop within 60s).
 
 ### 11.4 Why the live week made 100+ ticks/day while the study said "nothing here"
 
