@@ -269,3 +269,96 @@ Lower quality: expect roughly half the naked-level edge; the short side carried 
 - 2nd+ flips of the same level on the same day (except naked variants in Rule A) — chop, ~0 edge.
 - Flip entries in the last ~1 hour of RTH (follow-through collapses after 5.5h into the session).
 - Fading holds/clean rejects standalone. Deep-break or long-break conditioning (see 7: collapsed OOS).
+
+## 11. The trader-style study (confirmation modes, Held xN, volume nodes, and why the live week made money)
+
+Everything above was procued by a "robot" frame: chase every signal, fixed bracket, hold 10/30 minutes.
+The user trades differently: limit fills AT the level, 8-tick stops, 16-tick scalps (46 seconds to a
+couple of minutes), reads the volume-by-price profile, and picks 3-10 trades a day instead of hundreds.
+This section re-runs the same state machine in THAT frame. The signals here are limit fills at the
+level price (no chase), exits measured as the maximum favorable excursion (MFE) available within
+5 minutes of the fill, MAE within 60 seconds, split by the label state at fill time.
+
+### 11.1 Does the confirmation method change flip quality? (time vs ticks vs volume)
+
+| Confirm | Flips/day | Reach 8 / 20 ticks in 10 min | Best net cell (all flips) |
+|---|---|---|---|
+| 30s | 396 | 82% / 50% | -0.6 tk |
+| 60s | 279 | 82% / 50% | -0.6 tk |
+| 90s | 226 | 82% / 49% | +0.2 tk |
+| 120s | 193 | 82% / 49% | -0.2 tk |
+| 180s | 154 | 82% / 49% | -0.9 tk |
+| 6 ticks beyond | 8.7 | 91% / 64% | +2.8 tk (n=41, thin) |
+| 12 ticks beyond | 1.4 | too rare | n/a |
+| 3000 contracts | 0.5 | only 24 flips in 2 months | n/a |
+| 8000 contracts | 0.0 | zero flips | n/a |
+
+Read: shortening the timer adds many more signals with zero quality gain (the follow-through rates are
+identical); 6-ticks-beyond confirmation is rarer but the flips that pass are genuinely stronger
+(91%/64% vs 82%/49%); volume confirmation at 3k/8k contracts is dead on arrival at TicksPerRow=1 -
+a single-tick volume print is a handful of contracts, so 3,000 never accumulates before price is 20+
+ticks away or the level has already been reclaimed. Volume confirmation would need thresholds in the
+tens, not thousands. Net: the confirmation switch is not where the edge lives; 180s is fine, 6-tick
+confirmation is the only variant worth a second look.
+
+### 11.2 Does "Held xN" predict how far price will travel? (No.)
+
+Median favorable excursion within 5 minutes of a limit fill at the level, by the held count shown on
+the chart at that moment (all 44 RTH sessions, 385k bounce fills):
+
+| Held xN at fill | 0/1 | 2 | 3 | 4 | 5+ |
+|---|---|---|---|---|---|
+| median MFE (ticks) | 16 | 16 | 16 | 16 | 15 |
+| reached +32 within 5 min | 21% | 23% | 21% | 23% | 21% |
+
+The X in "Held xN" is session-age and touch-count, not predictive of travel size. A level that has
+held 8 times travels like one that has held twice. The number is confirmation that the level has been
+respected - it is not a power meter. This overturns the original premise of the study (and the
+Grok spec's hold_buckets.csv framing).
+
+### 11.3 Volume-by-price nodes at the level DO matter - and tops are cleaner than bottoms
+
+Node = the level's price bucket in its source session's volume profile: LVN = bar's volume in the
+bottom quartile of the profile, HVN = top quartile. Bounce fills (limit at level), split side:
+
+| Node / side | n | median MFE | reach +16 | reach +32 |
+|---|---|---|---|---|
+| HVN short | 47k | 16 | 50% | **25%** |
+| LVN short | 67k | 14 | 48% | **24%** |
+| MID short | 81k | 15 | 49% | 20% |
+| HVN long | 42k | 14 | 46% | 17% |
+| LVN long | 61k | 15 | 48% | 19% |
+| MID long | 79k | 15 | 48% | 19% |
+
+On the volatile live-trading week (Nov 16-19, 28k fills) the same cut: HVN shorts: median MFE 63 ticks,
+94% reached +16, 89% reached +32. LVN shorts 58% reached +32. Longs, in every node, much weaker
+(37-40% reached +32). The user's read - clean tops, sloppy bottoms - is in the tape at every node type,
+and HVN is the strongest place to short a level in every sample. Retest entries (after a flip) show no
+node effect.
+
+### 11.4 Why the live week made 100+ ticks/day while the study said "nothing here"
+
+Putting all cuts together on the user's live week (Nov 16-19):
+
+- Median available move from a limit fill at a level: 25-40 ticks (vs ~14-16 on an average day).
+- 75-87% of level touches reached +16 within 5 minutes; HVN shorts 94%.
+- BUT 60-74% of the same fills saw 8 ticks against within 60 seconds - the 8-tick stop is run over
+  roughly half the time on indiscriminate entries. The user's edge is the selection: which touches to
+  take (nodes, trend, momentum) and which to skip.
+- With-trend bounces win 62% vs 34% counter-trend; first flips are always directionally aligned with
+  the day's move from the open.
+- Take-everything mechanical versions of any of these rules lose after costs; the discretionary
+  selections do not. The 2.4-tick round trip is what kills high-frequency mechanical versions.
+
+Practical exit takeaway (the user's actual question): on active days the tape gives 25-40 ticks off a
+respected level, most of it in the first two-five minutes. A flat 16-tick take exists in the data as
+the "safe" exit - but scale-outs toward 24/32 are statistically supported on the short side at levels
+sitting in HVNs, and unsupported for longs.
+
+### 11.5 files
+
+- tables/confirm_mode_sweep.csv - confirmation modes, flip counts, reach rates, best cells
+- tables/heldn_mfe_summary.csv - Held xN vs MFE buckets
+- tables/vbp_node_summary.csv - volume node / side cuts
+- tables/timstyle_*.csv - 16-tick scalps cut by window/stop
+- parquet detail (not committed): heldn_mfe.parquet, vbp_fills.parquet, align_*_trades.parquet, chartstyle_trades.parquet
