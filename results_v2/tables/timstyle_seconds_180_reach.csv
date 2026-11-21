@@ -1,0 +1,13 @@
+config,window_s,n,reached_16_in_window
+all-flips,15,40662,0.025
+all-flips,30,40662,0.055
+all-flips,60,40662,0.115
+all-flips,120,40662,0.206
+first-flips,15,12702,0.024
+first-flips,30,12702,0.067
+first-flips,60,12702,0.142
+first-flips,120,12702,0.255
+naked-first,15,11796,0.024
+naked-first,30,11796,0.065
+naked-first,60,11796,0.141
+naked-first,120,11796,0.254

@@ -285,6 +285,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         private SharpDX.Direct2D1.Brush roleUntestedBrush;       // level role: untested tag
         private readonly Dictionary<string, LevelRoleState> levelRoleStates = new Dictionary<string, LevelRoleState>();
         private DateTime roleLastTickTime = DateTime.MinValue;
+        private double   roleLastTickPrice = double.NaN;   // last traded price, for the AMT readout
         private readonly List<RoleTracker> roleTrackers = new List<RoleTracker>();
         private int            roleTrackerSessionCount = -1;
         private SessionProfile roleTrackerMostRecent;
@@ -608,6 +609,29 @@ namespace NinjaTrader.NinjaScript.Indicators
         [Browsable(false)]
         public string LevelRoleBreakingColorSerialize
         { get { return Serialize.BrushToString(LevelRoleBreakingColor); } set { LevelRoleBreakingColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty]
+        [Display(Name = "AMT Acceptance Readout", Description = "Append the auction-market-theory verdict to each role tag: how the CURRENT session's developing VbP is treating this established level (SHORT-GO / SHORT-NO / LONG-GO / stand-down). Level-role study §11.6", Order = 8, GroupName = "3B. Level Roles")]
+        public bool ShowAmtReadout { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Hide Held Count (use role label only)", Description = "The study found the held-xN count does NOT predict travel (held 8x moves like held 2x). On = show the role label only; Off = keep the legacy held xN text", Order = 9, GroupName = "3B. Level Roles")]
+        public bool AmtHideHeldCount { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.05, 2.0)]
+        [Display(Name = "AMT Accept Threshold", Description = "Today's volume at the level's price row, as a fraction of today's POC-row volume, below which the auction is REJECTING the level (go signal). Study: low-accept bounce shorts above value = median 103 ticks vs 8 for high-accept", Order = 10, GroupName = "3B. Level Roles")]
+        public double AmtAcceptThreshold { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 100000000)]
+        [Display(Name = "AMT Min Profile Volume", Description = "Below this total session volume, today's developing profile is too thin to read — tags show '~thin profile (trust the role)'. Covers the pre-10:00 CT hours", Order = 11, GroupName = "3B. Level Roles")]
+        public long AmtMinProfileVolume { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0.0, 24.0)]
+        [Display(Name = "AMT Stand-Down Hour (local)", Description = "Chart-local hour at/after which tags read 'late – stand down' (last hour of RTH). Default 15.0 = 3 PM when the chart runs in Central Time", Order = 12, GroupName = "3B. Level Roles")]
+        public double AmtStandDownHour { get; set; }
 
         #endregion
 
@@ -968,6 +992,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LevelRoleSupportColor        = System.Windows.Media.Brushes.LimeGreen;
                 LevelRoleResistanceColor     = System.Windows.Media.Brushes.Red;
                 LevelRoleBreakingColor       = System.Windows.Media.Brushes.Gold;
+                ShowAmtReadout               = true;    // append the AMT checklist verdict to each role tag (§11.6)
+                AmtHideHeldCount             = true;    // held xN does not predict travel — show the role label only
+                AmtAcceptThreshold           = 0.33;    // volume at level < 33% of today's POC row = rejection (go)
+                AmtMinProfileVolume          = 250000;  // today's profile too thin to read — trust the role
+                AmtStandDownHour             = 15.0;    // chart-local: last hour of RTH → stand down
                 HvnLvnOnlyMode         = false;  // off by default — shows all node types (HVN + MVN + LVN)
                 VolumeBarDisplayMode   = AntonsonBarDisplayMode.Volume;  // default to standard volume bars
 
@@ -2082,15 +2111,25 @@ namespace NinjaTrader.NinjaScript.Indicators
             public int      Touches;
             public int      Helds;
             public int      BreakDir;     // direction of the running break attempt: +1 up, -1 down, 0 = none
+            public int      Flips;        // completed flips in this view (1 = first flip: the Rule-A trigger)
             public DateTime BreakStart;   // tick-time the current run beyond the level began
             public DateTime LastTick;     // tick-time of the last update; a finished session's state never updates again
             public bool     Frozen;       // set when the session this state belongs to ends; a frozen state is never updated again
+
+            // AMT readout (level-role study §11.6): how the CURRENT session's developing
+            // volume profile is treating this established level.
+            public double   AcceptRatio;  // volume today at the level's price bar / volume today at the POC bar
+            public int      VaPos;        // +1 level above today's developing value area, 0 inside, -1 below
+            public string   AmtVerdict;   // appended to the role tag (SHORT-GO / SHORT-NO / LONG-GO / no-go)
         }
 
         private class RoleTracker
         {
             public LevelRoleState State;
             public double         Level;
+            public string         TypeText;    // HI/LO/RTHC/VPOC/VVAH/VVAL/TPOPOC/TPOVAH/TPOVAL
+            public bool           IsNaked;     // source session is older than the most recent completed one
+            public bool           IsMostRecent;// source session is the previous (most recent completed) session
         }
 
         private string RoleKey(SessionProfile s, string type)
@@ -2109,7 +2148,10 @@ namespace NinjaTrader.NinjaScript.Indicators
             string suffix = "@" + ended.SessionDate.Ticks.ToString();
             foreach (KeyValuePair<string, LevelRoleState> kv in levelRoleStates)
                 if (kv.Value != null && kv.Key.EndsWith(suffix, StringComparison.Ordinal))
+                {
                     kv.Value.Frozen = true;
+                    kv.Value.AmtVerdict = null;   // a finished session's AMT readout is stale: keep frozen tags role-only
+                }
         }
 
         /// <summary>
@@ -2148,13 +2190,80 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             double band = TouchBand();
 
+            roleLastTickPrice = tickPrice;
+
             for (int i = 0; i < roleTrackers.Count; i++)
             {
                 RoleTracker t = roleTrackers[i];
                 if (t.State.Frozen) continue;   // its session has ended: keep the last calculation
                 t.State.LastTick = tickTime;
                 RunLevelRoleMachine(t.State, t.Level, tickPrice, touchPrevPrice, tickTime, band);
+                if (ShowAmtReadout)
+                    ComputeAmtReadout(t, tickTime);
             }
+        }
+
+        /// <summary>
+        /// AMT readout for one established level (level-role study §11.6): measures how the
+        /// CURRENT session's developing volume profile is treating the level. Rejection
+        /// (today's volume at the level's price row well below today's POC row) at a level
+        /// above today's developing value area is the strongest short cell in the 44-session
+        /// study; acceptance there is the strongest no-go. Long side only fires the Rule-A
+        /// exception: first flip of a naked VPOC/TPOPOC on a day moving up from the open.
+        /// </summary>
+        private void ComputeAmtReadout(RoleTracker t, DateTime tickTime)
+        {
+            LevelRoleState st = t.State;
+
+            if (currentSession == null || currentSession.VolumeAtPrice == null
+                || currentSession.VolumeAtPrice.Count == 0)
+            { st.AmtVerdict = ""; return; }
+
+            if (tickTime.TimeOfDay >= TimeSpan.FromHours(AmtStandDownHour))
+            { st.AmtVerdict = " | late - stand down"; return; }
+
+            long pocVol = 0;
+            currentSession.VolumeAtPrice.TryGetValue(currentSession.VPOCLevel, out pocVol);
+            if (pocVol > 0 && currentSession.TotalVolume < AmtMinProfileVolume)
+            { st.AmtVerdict = " | ~thin profile (trust the role)"; return; }
+
+            int idx = LevelOf(t.Level);   // same row-index the profile accumulates into
+            long volAtIndex = 0;
+            currentSession.VolumeAtPrice.TryGetValue(idx, out volAtIndex);
+            st.AcceptRatio = volAtIndex / (double)Math.Max(pocVol, 1);
+            st.VaPos = (currentSession.VVAH > 0 && currentSession.VVAL > 0)
+                ? (idx > currentSession.VVAH ? 1 : (idx < currentSession.VVAL ? -1 : 0))
+                : 0;
+
+            string pos = st.VaPos > 0 ? "VAbv" : st.VaPos < 0 ? "VAblo" : "VAin";
+            string acc = (int)Math.Round(st.AcceptRatio * 100.0) + "%";
+            string touchTag = st.Touches <= 1 ? "t1" : (st.Touches == 2 ? "t2" : "t3+");
+
+            if (st.Role < 0)
+            {
+                if (st.VaPos > 0)
+                    st.AmtVerdict = st.AcceptRatio <= AmtAcceptThreshold
+                        ? " | SHORT-GO " + pos + " acc" + acc + " " + touchTag
+                        : " | SHORT-NO acc" + acc;
+                else
+                    st.AmtVerdict = " | short-a " + pos + " acc" + acc + " " + touchTag;
+            }
+            else if (st.Role > 0)
+            {
+                bool ruleA = st.State == LRState.Flipped && st.Flips == 1 && t.IsNaked
+                             && (t.TypeText == "VPOC" || t.TypeText == "TPOPOC")
+                             && roleLastTickPrice >= currentSession.OpenPrice;
+                if (ruleA)
+                    st.AmtVerdict = " | LONG-GO (RuleA) acc" + acc;
+                else if (st.State == LRState.Flipped && st.Flips == 1
+                         && (t.TypeText == "VPOC" || t.TypeText == "TPOPOC")
+                         && roleLastTickPrice < currentSession.OpenPrice)
+                    st.AmtVerdict = " | long-NO (down day) acc" + acc;
+                else
+                    st.AmtVerdict = " | long-a " + pos + " acc" + acc + " " + touchTag;
+            }
+            else
+                st.AmtVerdict = "";
         }
 
         private void RebuildRoleTrackers()
@@ -2171,33 +2280,33 @@ namespace NinjaTrader.NinjaScript.Indicators
                 if (ShowPriorSessionLevels && LevelRolesHiLo)
                 {
                     if (s.HighLevel > 0)
-                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh);
+                        AddRoleTracker(RoleKey(s, "HI"), s.SessionHigh, isMostRecent);
                     if (s.LowLevel > 0)
-                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow);
+                        AddRoleTracker(RoleKey(s, "LO"), s.SessionLow, isMostRecent);
                 }
 
                 if (ShowRTHCloseLevels && LevelRolesHiLo && HasValidRthClose(s))
-                    AddRoleTracker(RoleKey(s, "RTHC"), s.RTHClose);
+                    AddRoleTracker(RoleKey(s, "RTHC"), s.RTHClose, isMostRecent);
 
                 if ((isMostRecent ? ShowPriorSessionVPOC : ShowNakedVPOC) && s.VPOCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "VPOC"), LevelCenterPrice(s.VPOCLevel));
+                    AddRoleTracker(RoleKey(s, "VPOC"), LevelCenterPrice(s.VPOCLevel), isMostRecent);
 
                 if (ShowNakedVAHVAL)
                 {
                     if (s.VVAH > 0)
-                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize);
+                        AddRoleTracker(RoleKey(s, "VVAH"), s.VVAH * rowSize + rowSize, isMostRecent);
                     if (s.VVAL > 0)
-                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize);
+                        AddRoleTracker(RoleKey(s, "VVAL"), s.VVAL * rowSize, isMostRecent);
                 }
 
                 if ((isMostRecent ? ShowPriorSessionTPOPOC : ShowNakedTPOPOC) && s.POCLevel > 0)
-                    AddRoleTracker(RoleKey(s, "TPOPOC"), LevelCenterPrice(s.POCLevel));
+                    AddRoleTracker(RoleKey(s, "TPOPOC"), LevelCenterPrice(s.POCLevel), isMostRecent);
                 if (isMostRecent ? ShowPriorSessionTPOVAHVAL : ShowNakedTPOVAHVAL)
                 {
                     if (s.TPOVAH > 0)
-                        AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize);
+                        AddRoleTracker(RoleKey(s, "TPOVAH"), s.TPOVAH * rowSize + rowSize, isMostRecent);
                     if (s.TPOVAL > 0)
-                        AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize);
+                        AddRoleTracker(RoleKey(s, "TPOVAL"), s.TPOVAL * rowSize, isMostRecent);
                 }
             }
 
@@ -2216,7 +2325,7 @@ namespace NinjaTrader.NinjaScript.Indicators
             roleTrackerRTHClose     = ShowRTHCloseLevels;
         }
 
-        private void AddRoleTracker(string key, double level)
+        private void AddRoleTracker(string key, double level, bool isMostRecent)
         {
             string viewKey = RoleViewKey(key, currentSession);
             LevelRoleState st;
@@ -2229,6 +2338,11 @@ namespace NinjaTrader.NinjaScript.Indicators
             RoleTracker t = new RoleTracker();
             t.State = st;
             t.Level = level;
+            t.IsMostRecent = isMostRecent;
+            t.IsNaked = !isMostRecent;              // study "naked" = source session older than the previous one
+            int typeStart = key.IndexOf('|');
+            t.TypeText = typeStart >= 0 && typeStart + 1 < key.Length
+                ? key.Substring(typeStart + 1) : key;
             roleTrackers.Add(t);
         }
 
@@ -2327,6 +2441,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 {
                     st.State         = LRState.Flipped;
                     st.Role          = side;
+                    st.Flips++;
                     st.BreakDir      = 0;
                     st.PendingReject = false;
                 }
@@ -2345,27 +2460,37 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string RoleTagText(LevelRoleState st, out SharpDX.Direct2D1.Brush brush)
         {
             string roleWord = st.Role < 0 ? "Resistance" : "Support";
+            string text;
             switch (st.State)
             {
                 case LRState.Untested:
                     brush = roleUntestedBrush;
-                    return st.Role < 0 ? "Resistance (untested)"
+                    text = st.Role < 0 ? "Resistance (untested)"
                          : st.Role > 0 ? "Support (untested)" : "(untested)";
+                    break;
                 case LRState.Testing:
                     brush = roleBreakingBrush;
-                    return roleWord + " · testing";
+                    text = roleWord + " · testing";
+                    break;
                 case LRState.Held:
                     brush = st.Role < 0 ? roleResistanceBrush : roleSupportBrush;
-                    return st.Helds > 0 ? roleWord + " · held x" + st.Helds.ToString() : roleWord;
+                    text = (st.Helds > 0 && !AmtHideHeldCount)
+                        ? roleWord + " · held x" + st.Helds.ToString()
+                        : roleWord;
+                    break;
                 case LRState.Flipped:
                     brush = st.Role < 0 ? roleResistanceBrush : roleSupportBrush;
-                    return roleWord + " · flipped";
+                    text = roleWord + " · flipped";
+                    break;
                 default: // Breaking
                     int elapsed = st.LastTick > st.BreakStart
                         ? (int)(st.LastTick - st.BreakStart).TotalSeconds : 0;
                     brush = roleBreakingBrush;
-                    return roleWord + " · BREAKING " + elapsed.ToString() + "s";
+                    text = roleWord + " · BREAKING " + elapsed.ToString() + "s";
+                    break;
             }
+            return st.AmtVerdict != null && st.AmtVerdict.Length > 0
+                ? text + st.AmtVerdict : text;
         }
 
         private void DrawLevelRoleTag(ChartScale chartScale, int sessionEndX, string key,
