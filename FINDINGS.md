@@ -461,6 +461,33 @@ Memory anchors, in trader units:
 - "Held xN" is decoration: the N does not predict travel size.
 - Confirmation modes (time/ticks/volume) don't change flip quality; keep 180s.
 
+### Implemented in the indicator
+
+Steps 3-7 of this checklist are now computed live by AntonsonProfile.cs and appended to every
+level-role tag. Settings under "3B. Level Roles":
+
+- **AMT Acceptance Readout** (on): acceptance = today's volume at the level's price row /
+  today's POC-row volume, from the CURRENT session's developing profile, no lookahead;
+  position = level vs today's developing 68% volume value area.
+- **AMT Accept Threshold** (0.33): below a third of POC-row volume = rejection (go);
+  near/above = acceptance (no-go).
+- **AMT Min Profile Volume** (250k): today's profile too thin to read -> "~thin profile
+  (trust the role)" — covers the pre-~10:00 CT session.
+- **AMT Stand-Down Hour** (15.0 chart-local): last hour of RTH -> "late - stand down".
+- **Hide Held Count** (on): the held-xN number is dropped from labels (study §11.2 — it does
+  not predict travel); keep touches as t1/t2/t3+ in the verdict (t1/t2 > t3+).
+
+Tag legend: `SHORT-GO VAbv acc14% t1` = best cell (level above today's developing VA, today's
+volume rejecting it, first touch). `SHORT-NO acc81%` = auction accepting at the level — do not
+short. `short-a` = short idea but the level is inside/below value (no proven gradient) — smaller,
+optional. `LONG-GO (RuleA)` = the lone long exception: FIRST flip of a NAKED VPOC/TPOPOC with
+price back above the session open (day moving up). `long-a` / `long-NO (down day)` = skip.
+Frozen (past-session) tags stay role-only: their AMT read would be stale.
+The execution plan the tags do not show: limit at/just above the level, 8-tick stop (real exit =
+volume building toward acceptance while in), 16-tick first target, half-off at 16 + trail on
+LVN/confirmed-rejection shorts (tails ran 40-122 tk) — and most travel lands in the first 2-5
+minutes (§11.7: elevator down, stairs up).
+
 ### 11.7 Elevator down, stairs up - measured
 
 Same 581k limit fills, travel capped at a 10-minute window:
