@@ -175,6 +175,11 @@ def replay_roles(
 ) -> pd.DataFrame:
     band = touch_band(settings.touch_tolerance_ticks, settings.tick_size)
     accept = settings.accept_seconds
+    if settings.flip_confirm_mode == "seconds":
+        confirm = None
+        accept = settings.accept_seconds
+    else:
+        confirm = (settings.flip_confirm_mode, settings.flip_confirm_value)
     prox = band + settings.tick_size * 2
 
     tracked = [
@@ -197,7 +202,7 @@ def replay_roles(
     for vi, view in enumerate(tqdm(views, desc="replay RTH")):
         v_start_ns = int(view["start_utc"].value)
         v_end_ns = int(view["end_utc"].value)
-        ts, last, _ = store.slice_range(v_start_ns, v_end_ns)
+        ts, last, vol = store.slice_range(v_start_ns, v_end_ns)
         n = len(ts)
         if n == 0:
             continue
@@ -220,6 +225,7 @@ def replay_roles(
         prev_price = np.nan
         prices_list = last.tolist()
         ts_list = ts.tolist()
+        vol_list = vol.tolist()
 
         for i in range(n):
             price = prices_list[i]
@@ -246,6 +252,7 @@ def replay_roles(
                     st, lvl.price, price,
                     None if prev_price != prev_price else prev_price,
                     ts_ns, band, accept, settings.tick_size,
+                    tick_volume=int(vol_list[i]), confirm=confirm,
                 )
                 if evs:
                     nd = naked_done.get(lvl.level_id)

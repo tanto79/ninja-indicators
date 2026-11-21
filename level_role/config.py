@@ -25,6 +25,8 @@ class Settings:
     ticks_per_row: int = 1
     touch_tolerance_ticks: int = 0
     accept_seconds: int = 180
+    flip_confirm_mode: str = "seconds"   # seconds | ticks | volume
+    flip_confirm_value: float = 180.0
     va_pct: float = 0.70          # volume / TPO value area
     tpo_period_minutes: int = 30  # classic ES TPO period
 

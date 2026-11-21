@@ -36,6 +36,7 @@ class LevelRoleState:
     helds: int = 0
     break_dir: int = 0
     break_start_ns: int = 0
+    break_volume: int = 0
     frozen: bool = False
 
 
@@ -78,6 +79,7 @@ def level_touched(level: float, prev: float | None, price: float, band: float, e
 
 def role_band_entry(st: LevelRoleState) -> None:
     st.break_dir = 0
+    st.break_volume = 0
     if st.state == LRState.Breaking:
         st.state = LRState.Testing
     if st.state == LRState.Untested:
@@ -101,6 +103,8 @@ def run_machine(
     band: float,
     accept_seconds: int,
     tick_size: float,
+    tick_volume: int = 0,
+    confirm: tuple | None = None,
 ) -> list[dict]:
     events: list[dict] = []
     if st.frozen:
@@ -127,6 +131,7 @@ def run_machine(
             st.helds += 1
             st.role = side
             st.break_dir = 0
+            st.break_volume = 0
             st.pending_reject = False
             st.state = LRState.Held
             events.append(_hold_event("reclaim", st.helds))
@@ -147,6 +152,7 @@ def run_machine(
         if st.state == LRState.Breaking:
             st.helds += 1
             st.break_dir = 0
+            st.break_volume = 0
             st.pending_reject = False
             st.state = LRState.Held
             events.append(_hold_event("failed_break", st.helds))
@@ -162,9 +168,16 @@ def run_machine(
         if st.break_dir != side:
             st.break_dir = side
             st.break_start_ns = tick_ns
+            st.break_volume = 0
             events.append({"event_type": "break_start", "hold_subtype": None})
-        elapsed = (tick_ns - st.break_start_ns) / 1e9
-        if elapsed >= accept_seconds:
+        if confirm is None or confirm[0] == "seconds":
+            fired = (tick_ns - st.break_start_ns) / 1e9 >= accept_seconds
+        elif confirm[0] == "ticks":
+            fired = (tick_price - level_price) * side >= confirm[1] * tick_size
+        else:
+            st.break_volume += int(tick_volume)
+            fired = st.break_volume >= confirm[1]
+        if fired:
             st.state = LRState.Flipped
             st.role = side
             st.break_dir = 0
